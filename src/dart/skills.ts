@@ -1,4 +1,4 @@
-import type { SkillNode } from './types';
+import type { SkillNode } from '../shared/types';
 
 // ===== 技能树拓扑数据 =====
 // 中心 CORE 为起点（默认拥有），四条分支向外辐射：

@@ -1,5 +1,5 @@
 import type { DerivedStats, SkillEffect } from './types';
-import { ALL_NODES, NODE_BY_ID } from './skills';
+import { ALL_NODES, NODE_BY_ID } from '../dart/skills';
 
 // ===== 游戏存档与派生属性 =====
 

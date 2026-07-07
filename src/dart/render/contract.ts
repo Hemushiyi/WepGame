@@ -1,8 +1,8 @@
 // ===== 渲染层共享契约：坐标 / 调色板 / 像素工具 / 场景环境 =====
-// 所有 render/* 模块只允许从本文件与 ../types 引入。
+// 所有 render/* 模块只允许从本文件与 ../../shared/types 引入。
 // 修改本文件的常量会同步影响 game.ts 的逻辑坐标。
 
-import type { DerivedStats } from '../types';
+import type { DerivedStats } from '../../shared/types';
 
 /** 虚拟分辨率（提升细节，仍保持像素感）。
  *  VH 固定；VW 随屏幕宽高比动态变化（见 applyLayout），使画布比例始终等于
@@ -233,7 +233,7 @@ export const rnd = (n: number) => Math.round(n);
 
   fx.ts:
     export function drawAim(env: SceneEnv, aimY: number, locked: boolean): void
-    export function drawDart(env: SceneEnv, dart: import('../types').Dart): void
-    export function drawFloats(env: SceneEnv, floats: import('../types').FloatText[]): void
+    export function drawDart(env: SceneEnv, dart: import('../../shared/types').Dart): void
+    export function drawFloats(env: SceneEnv, floats: import('../../shared/types').FloatText[]): void
     export function drawHint(env: SceneEnv, visible: boolean): void
 */

@@ -1,5 +1,5 @@
 import './style.css';
-import { GameState } from './state';
+import { GameState } from './shared/state';
 import { buildApp } from './ui';
 
 const state = new GameState();

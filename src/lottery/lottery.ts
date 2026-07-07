@@ -1,5 +1,5 @@
-import { GameState, LOTTO_UNLOCK_TOTAL } from './state';
-import { audio } from './audio';
+import { GameState, LOTTO_UNLOCK_TOTAL } from '../shared/state';
+import { audio } from '../shared/audio';
 
 /** 档位→音调偏移：铜 0 / 银 +5 / 金 +12 半音，越高档音色越亮 */
 function tierSemi(t: TierDef): number {

@@ -24,6 +24,13 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* 强制 [hidden] 生效：作者样式里的 display:flex 等会盖掉 UA 默认的 [hidden]{display:none}
+   （典型受害者：.lotto-locked 解锁后靠 hidden 隐藏，但其 display:flex 让它在横版里仍占位、
+   把购买按钮所在的 .lotto-side 挤成 0 宽）。!important 确保带 hidden 属性的元素真正不渲染。 */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -895,6 +902,8 @@ body {
     height: 100%;
     width: auto;
     max-height: 100%;
+    margin: 0; /* 抵消基础 .lotto-stage 的 margin:0 auto：横版 flex-row 下 auto 外边距
+      会吃光所有剩余空间，导致右侧 .lotto-side(flex-grow) 塌缩为 0 宽、购买按钮被挤出可视区 */
   }
   .lotto-side {
     flex: 1 1 0;
@@ -955,6 +964,7 @@ body {
   height: 100%;
   width: auto;
   max-height: 100%;
+  margin: 0; /* 同 @media(max-height) 块：抵消 auto 外边距，避免 .lotto-side 塌缩 */
 }
 .game-root.rotated .lotto-side {
   flex: 1 1 0;

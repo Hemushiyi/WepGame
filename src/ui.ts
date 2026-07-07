@@ -1,9 +1,9 @@
-import { GameState, LOTTO_UNLOCK_TOTAL } from './state';
-import { Game } from './game';
-import { ALL_NODES, NODE_BY_ID, getEdges } from './skills';
-import { Lottery } from './lottery';
-import { audio } from './audio';
-import type { SkillBranch } from './types';
+import { GameState, LOTTO_UNLOCK_TOTAL } from './shared/state';
+import { Game } from './dart/game';
+import { ALL_NODES, NODE_BY_ID, getEdges } from './dart/skills';
+import { Lottery } from './lottery/lottery';
+import { audio } from './shared/audio';
+import type { SkillBranch } from './shared/types';
 
 // ===== HUD + 拓扑技能树 UI =====
 

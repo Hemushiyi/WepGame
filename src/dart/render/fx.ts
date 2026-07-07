@@ -1,5 +1,5 @@
 // ===== fx.ts：准星 / 飞镖 / 飘字 / 提示 =====
-// 只允许从 '../render/contract' 与 '../types' 引入。
+// 只允许从 '../render/contract' 与 '../../shared/types' 引入。
 
 import {
   BOARD_CENTER,
@@ -11,7 +11,7 @@ import {
   pixelLine,
   pixelRect,
 } from '../render/contract';
-import type { Dart, FloatText } from '../types';
+import type { Dart, FloatText } from '../../shared/types';
 
 // ---------- 确定性伪随机（LCG，不依赖全局随机） ----------
 // 基于 dart 实例 / 帧序号的稳定哈希，避免每帧抖动。

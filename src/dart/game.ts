@@ -1,5 +1,5 @@
-import type { Dart, FloatText, Vec2 } from './types';
-import { GameState } from './state';
+import type { Dart, FloatText, Vec2 } from '../shared/types';
+import { GameState } from '../shared/state';
 import {
   VH,
   GROUND_Y,
@@ -23,7 +23,7 @@ import { drawBoard } from './render/board';
 import { drawCharacter, drawPet } from './render/character';
 import { drawAim, drawDart, drawFloats, drawHint } from './render/fx';
 import { juice } from './render/juice';
-import { audio } from './audio';
+import { audio } from '../shared/audio';
 
 // ===== 主游戏：循环 / 投掷物理 / 计分 / 宠物（渲染委托给 render/* 模块）=====
 
