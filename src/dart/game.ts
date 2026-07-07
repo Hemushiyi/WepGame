@@ -12,6 +12,8 @@ import {
   applyLayout,
   pixelRect,
   pixelLine,
+  pixelCircle,
+  pixelCircleRing,
   type SceneEnv,
 } from './render/contract';
 import {
@@ -21,7 +23,7 @@ import {
 } from './render/background';
 import { drawBoard } from './render/board';
 import { drawCharacter, drawPet } from './render/character';
-import { drawAim, drawDart, drawFloats, drawHint } from './render/fx';
+import { drawAim, drawDart, drawDirection, drawFloats, drawHint } from './render/fx';
 import { juice } from './render/juice';
 import { audio } from '../shared/audio';
 
@@ -29,8 +31,14 @@ import { audio } from '../shared/audio';
 
 const AIM_SPEED = 210; // 准星移动速度（虚拟像素/秒）
 const ARC = 32; // 飞镖抛物线高度
-const PLAYER_SPREAD = 3; // 玩家投掷基础散布
-const PET_BASE_SPREAD = 36; // 宠物基础散布
+const PLAYER_SPREAD = 3; // 玩家投掷基础散布（Y）
+const PET_BASE_SPREAD = 36; // 宠物基础散布（Y）
+const DIR_RANGE = 60; // 出手方向最大偏移（虚拟像素，r4=74 留 14 边距）
+const DIR_PERIOD = 1.9; // 方向全振荡周期（秒）
+const DIR_OMEGA = (Math.PI * 2) / DIR_PERIOD;
+const PLAYER_SPREAD_X = 3; // 玩家方向随机散布（X）
+const PET_X_SPREAD = 36; // 宠物方向随机散布（X，与 PET_BASE_SPREAD 构成圆形分布）
+const DOUBLE_SHOT_X_JITTER = 20; // 双发第二支相对第一支的 X 抖动
 const WIND_STRENGTH = 16; // 风向基础偏移（虚拟像素，wind=±1 时）
 
 interface Callbacks {
@@ -55,6 +63,8 @@ export class Game {
   // 投掷状态
   private aimY = BOARD_CENTER.y;
   private aimPhase = 0; // 正弦准星相位（慢入慢出，替代三角硬反弹）
+  private aimDir = 0; // 出手方向 -1..1（左右摆动，玩家锁定用）
+  private dirPhase = 0; // 方向正弦相位
   private cooldownLeft = 0;
   private throwAnimLeft = 0;
   private petTimers: number[] = [];
@@ -191,31 +201,40 @@ export class Game {
       audio.sfx('pet'); // 宠物投镖音（与玩家出手音区分）
     }
 
-    // 计算落点 Y
-    let aimY = this.aimY;
+    // 计算落点（2D）：方向影响 X、aimY/风影响 Y；磁吸在 X/Y 同系数拉向圆心，风在磁吸后叠加。
+    const dirOffset = fromPet
+      ? (Math.random() * 2 - 1) * PET_X_SPREAD * (1 - stats.petAccuracy)
+      : this.aimDir * DIR_RANGE;
+
+    let ty = this.aimY;
     if (fromPet) {
-      const spread = PET_BASE_SPREAD * (1 - stats.petAccuracy);
-      aimY = BOARD_CENTER.y + (Math.random() * 2 - 1) * spread;
+      ty = BOARD_CENTER.y + (Math.random() * 2 - 1) * PET_BASE_SPREAD * (1 - stats.petAccuracy);
     } else {
-      // 玩家：极小散布 + 磁吸（拉向中心）
-      aimY += (Math.random() * 2 - 1) * PLAYER_SPREAD;
-      const off = aimY - BOARD_CENTER.y;
-      aimY = BOARD_CENTER.y + off * (1 - stats.magnet);
+      ty += (Math.random() * 2 - 1) * PLAYER_SPREAD;
     }
-    // 风向：所有飞镖统一受风偏移（被 windResist 抵消部分）
-    aimY += this.windOffset();
+    // Y 磁吸（拉向圆心），再叠加风（风不被磁吸削弱，仅 windResist 抗）
+    ty = BOARD_CENTER.y + (ty - BOARD_CENTER.y) * (1 - stats.magnet) + this.windOffset();
 
-    this.spawnDart(aimY, fromPet, petIndex);
+    // X：方向 + 小散布 + 磁吸（玩家）；宠物不磁吸
+    let tx = BOARD_CENTER.x + dirOffset;
+    if (!fromPet) {
+      tx += (Math.random() * 2 - 1) * PLAYER_SPREAD_X;
+      tx = BOARD_CENTER.x + (tx - BOARD_CENTER.x) * (1 - stats.magnet);
+    }
 
-    // 双发
+    this.spawnDart(tx, ty, fromPet, petIndex);
+
+    // 双发：第二支相对第一支抖动（聚集，体现"一次操作两支镖"）
     if (!fromPet && Math.random() < stats.doubleShotChance) {
-      const extra = aimY + (Math.random() * 2 - 1) * 12;
-      this.spawnDart(extra, false, petIndex, 0.06);
+      const tx2 = tx + (Math.random() * 2 - 1) * DOUBLE_SHOT_X_JITTER;
+      const ty2 = ty + (Math.random() * 2 - 1) * 12;
+      this.spawnDart(tx2, ty2, false, petIndex, 0.06);
     }
     return true;
   }
 
   private spawnDart(
+    targetX: number,
     targetY: number,
     fromPet: boolean,
     petIndex: number,
@@ -223,12 +242,12 @@ export class Game {
   ): void {
     const stats = this.state.stats();
     const start = fromPet ? this.petHand(petIndex) : CHAR_HAND;
-    const dist = BOARD_CENTER.x - start.x;
+    const dist = Math.abs(targetX - start.x);
     const duration = (dist / stats.dartSpeed) * 1000 + delay * 1000;
     this.darts.push({
       pos: { ...start },
       sx: start.x,
-      target: { x: BOARD_CENTER.x, y: targetY },
+      target: { x: targetX, y: targetY },
       startY: start.y,
       progress: -delay, // 负值表示延迟起飞
       speed: Math.max(160, duration),
@@ -279,6 +298,11 @@ export class Game {
     const omega = (Math.PI * aimSpeed) / (2 * range);
     this.aimPhase += omega * dts;
     this.aimY = BOARD_CENTER.y + Math.sin(this.aimPhase) * range;
+
+    // 出手方向：独立正弦振荡，不振荡提速（保持稳定节拍，与 aimY 渐快形成双层节奏）。
+    // 周期 1.9s 与 aimY(~1.64s) 比值不可约 → 落点轨迹为缓慢进动的 Lissajous，不可背板。
+    this.dirPhase += DIR_OMEGA * dts;
+    this.aimDir = Math.sin(this.dirPhase);
 
     // 风向：两个不同频率正弦叠加，平滑可读但节奏难背
     this.wind = Math.max(
@@ -337,7 +361,7 @@ export class Game {
 
   private resolveHit(d: Dart): void {
     const stats = this.state.stats();
-    const dist = Math.abs(d.target.y - BOARD_CENTER.y);
+    const dist = Math.hypot(d.target.x - BOARD_CENTER.x, d.target.y - BOARD_CENTER.y);
     const { points, label, color, bull } = this.scoreFor(dist, stats);
 
     let mult = 1;
@@ -463,6 +487,7 @@ export class Game {
 
     // 4) 前景动态实体
     drawAim(env, this.aimY, this.throwAnimLeft > 0);
+    drawDirection(env, this.aimDir * DIR_RANGE, this.throwAnimLeft > 0);
     this.drawWindUI(env.ctx);
     drawCharacter(
       env,
@@ -486,8 +511,6 @@ export class Game {
 
   /** 风向条 + 受风后的预测落点标记（让风向成为可预判的技巧要素） */
   private drawWindUI(ctx: CanvasRenderingContext2D): void {
-    const s = this.state.stats();
-
     // 顶部左侧：风向条
     const gx = 10;
     const gy = 10;
@@ -510,19 +533,18 @@ export class Game {
     ctx.fillStyle = col;
     ctx.fillText('WIND 风', gx, gy - 2);
 
-    // 预测落点：在准星 Y 上叠加风偏移，橙色虚线 + 端点三角
+    // 预测落点（2D）：方向定 X、aimY+风 定 Y，橙色十字 + 小圆环标记真实落点
     if (this.cooldownLeft > 0) return;
+    const predX = Math.round(BOARD_CENTER.x + this.aimDir * DIR_RANGE);
     const predY = Math.round(this.aimY + this.windOffset());
-    const half = s.r4 + 16;
-    const bx = BOARD_CENTER.x;
-    const left = bx - half;
-    const right = bx + half;
-    for (let x = left; x < right; x += 5) {
-      pixelRect(ctx, x, predY, 3, 1, '#ff8c42');
-    }
-    pixelLine(ctx, left, predY, left + 4, predY - 3, '#ff8c42');
-    pixelLine(ctx, left, predY, left + 4, predY + 3, '#ff8c42');
-    pixelLine(ctx, right, predY, right - 4, predY - 3, '#ff8c42');
-    pixelLine(ctx, right, predY, right - 4, predY + 3, '#ff8c42');
+    const predCol = '#ff8c42';
+    // 十字刻度（4 短臂，留中心空隙）
+    pixelLine(ctx, predX - 5, predY, predX - 2, predY, predCol);
+    pixelLine(ctx, predX + 2, predY, predX + 5, predY, predCol);
+    pixelLine(ctx, predX, predY - 5, predX, predY - 2, predCol);
+    pixelLine(ctx, predX, predY + 2, predX, predY + 5, predCol);
+    // 中心小圆环 + 内点
+    pixelCircleRing(ctx, predX, predY, 3, predCol);
+    pixelCircle(ctx, predX, predY, 1, predCol);
   }
 }

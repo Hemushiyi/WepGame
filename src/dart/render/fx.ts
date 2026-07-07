@@ -3,6 +3,7 @@
 
 import {
   BOARD_CENTER,
+  CHAR_HAND,
   PAL,
   SceneEnv,
   VW,
@@ -101,6 +102,60 @@ function drawTriTip(
 }
 
 // ============================================================
+// drawDirection：出手方向指示器（黄金矿工式钩爪摆动）
+// 从角色手部 CHAR_HAND 拉一条虚线"瞄准臂"指向盘心水平线上的方向预测点，
+// 随 aimDir 左右扫摆。纯 X 通道、不掺 Y/风，与 drawAim（Y 准星）解耦。
+// ============================================================
+export function drawDirection(env: SceneEnv, dirOffset: number, locked: boolean): void {
+  const { ctx, time } = env;
+  const hx = CHAR_HAND.x;
+  const hy = CHAR_HAND.y;
+  const tx = Math.round(BOARD_CENTER.x + dirOffset);
+  const ty = Math.round(BOARD_CENTER.y);
+
+  const color = locked ? PAL['y'] : PAL['e'];
+
+  // 虚线瞄准臂 + 末端三角（指向盘心侧，靶恒在右侧 → dir +1）+ 手部锚点
+  drawDashedLine(ctx, hx, hy, tx, ty, 3, 2, color);
+  drawTriTip(ctx, tx, ty, +1, color);
+  pixelRect(ctx, hx - 1, hy - 1, 3, 3, color);
+
+  // 锁定高频脉冲：叠白色高亮（与 drawAim 同步）
+  if (locked) {
+    const pulse = 0.5 + 0.5 * Math.sin((time / 1000) * 14);
+    if (pulse > 0.5) {
+      drawDashedLine(ctx, hx, hy, tx, ty, 3, 2, PAL['W']);
+      drawTriTip(ctx, tx, ty, +1, PAL['W']);
+    }
+  }
+}
+
+// 虚线：沿 (x0,y0)→(x1,y1) 画 on 像素亮、off 像素空的点划
+function drawDashedLine(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  on: number,
+  off: number,
+  color: string,
+): void {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len = Math.hypot(dx, dy);
+  if (len < 0.001) return;
+  const ux = dx / len;
+  const uy = dy / len;
+  let d = 0;
+  while (d < len) {
+    const segEnd = Math.min(len, d + on);
+    pixelLine(ctx, x0 + ux * d, y0 + uy * d, x0 + ux * segEnd, y0 + uy * segEnd, color);
+    d += on + off;
+  }
+}
+
+// ============================================================
 // drawDart：飞行中的飞镖
 // ============================================================
 export function drawDart(env: SceneEnv, dart: Dart): void {
@@ -113,7 +168,7 @@ export function drawDart(env: SceneEnv, dart: Dart): void {
   const sink = dart.hit ? Math.min(2, Math.round((dart.progress - 1) * 40)) : 0;
   const py = Math.round(dart.pos.y) + sink;
 
-  // 弦向朝向角
+  // 弦向朝向角：起飞点指向落点的方向（target.x 含方向偏移，朝向自然体现出手方向）
   const ang = Math.atan2(dart.target.y - dart.startY, dart.target.x - dart.sx);
 
   // 颜色：玩家 / 宠物区分

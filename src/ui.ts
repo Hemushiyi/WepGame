@@ -168,7 +168,7 @@ export function buildApp(state: GameState): Game {
     }
   })();
   const ONBOARD_COPY: Record<'entry' | 'bull' | 'wind', string> = {
-    entry: '🎯 准星左右移动，看准时机点击投掷！',
+    entry: '🎯 上下准星 + 左右方向，找准时机的交点出手！',
     bull: '💥 中心命中！连续命中可叠连击倍率',
     wind: '🌬️ 有风：飞镖会被吹偏，留意橙色预测落点',
   };
