@@ -1,6 +1,7 @@
-import type { DerivedStats, LottoStats, SkillEffect, LevelId } from './types';
+import type { DerivedStats, LottoStats, BattleStats, SkillEffect, LevelId } from './types';
 import { ALL_NODES, NODE_BY_ID } from '../dart/skills';
 import { ALL_LOTTO_NODES, LOTTO_NODE_BY_ID } from '../lottery/skills';
+import { ALL_BATTLE_NODES, BATTLE_NODE_BY_ID } from '../battle/skills';
 
 // ===== 游戏存档与派生属性 =====
 
@@ -67,6 +68,17 @@ const BASE_LOTTO: LottoStats = {
   freeTicket: 0,
 };
 
+/** 打怪关卡基础属性（未被任何打怪技能加成前） */
+const BASE_BATTLE: BattleStats = {
+  damage: 1,
+  cooldown: 380,
+  maxHp: 5,
+  crit: 0,
+  critMult: 2,
+  lifesteal: 0,
+  coinBonus: 0,
+};
+
 interface SaveData {
   v: number;
   coins: number;
@@ -76,6 +88,7 @@ interface SaveData {
   unlocked?: string[]; // v2 老存档：飞镖技能（迁移后并入 unlockedDart）
   unlockedDart?: string[]; // v3 起按关卡分离
   unlockedLotto?: string[]; // v3 起按关卡分离
+  unlockedBattle?: string[]; // 打怪关卡技能（缺省 → 仅 bcore）
   lotto?: LottoSave; // v2 起新增
 }
 
@@ -88,10 +101,13 @@ export class GameState {
   unlockedDart = new Set<string>(['core']);
   /** 彩票关卡已解锁技能（默认拥有 lcore） */
   unlockedLotto = new Set<string>(['lcore']);
+  /** 打怪关卡已解锁技能（默认拥有 bcore） */
+  unlockedBattle = new Set<string>(['bcore']);
   /** 刮刮乐统计（持久化） */
   lotto: LottoSave = { ...DEFAULT_LOTTO };
   private cachedStats: DerivedStats | null = null;
   private cachedLottoStats: LottoStats | null = null;
+  private cachedBattleStats: BattleStats | null = null;
 
   constructor() {
     this.load();
@@ -112,6 +128,7 @@ export class GameState {
         const legacyDart = data.v < 3 ? data.unlocked : data.unlockedDart;
         this.unlockedDart = new Set(['core', ...(legacyDart || [])]);
         this.unlockedLotto = new Set(['lcore', ...(data.v >= 3 ? data.unlockedLotto || [] : [])]);
+        this.unlockedBattle = new Set(['bcore', ...(data.unlockedBattle || [])]);
         // 仅 v2+ 携带彩票统计；v1 老存档保持默认零值（金币/技能照常继承）
         if (data.v >= 2 && data.lotto) {
           const incoming = data.lotto as Partial<LottoSave>;
@@ -151,6 +168,7 @@ export class GameState {
       maxCombo: this.maxCombo,
       unlockedDart: [...this.unlockedDart],
       unlockedLotto: [...this.unlockedLotto],
+      unlockedBattle: [...this.unlockedBattle],
       lotto: this.lotto,
     };
     try {
@@ -203,13 +221,35 @@ export class GameState {
     return s;
   }
 
+  /** 计算打怪关卡派生属性（带缓存） */
+  battleStats(): BattleStats {
+    if (this.cachedBattleStats) return this.cachedBattleStats;
+    const s: BattleStats = { ...BASE_BATTLE };
+    for (const node of ALL_BATTLE_NODES) {
+      if (!this.unlockedBattle.has(node.id)) continue;
+      for (const e of node.effects) applyBattleEffect(s, e);
+    }
+    s.damage = Math.max(1, s.damage);
+    s.cooldown = Math.max(140, s.cooldown);
+    s.maxHp = Math.max(1, s.maxHp);
+    s.crit = Math.min(0.75, Math.max(0, s.crit));
+    s.lifesteal = Math.max(0, s.lifesteal);
+    s.coinBonus = Math.min(1, Math.max(0, s.coinBonus));
+    this.cachedBattleStats = s;
+    return s;
+  }
+
   /** 关卡 → 该关已解锁技能集合 */
   private ownedSet(level: LevelId): Set<string> {
-    return level === 'lotto' ? this.unlockedLotto : this.unlockedDart;
+    if (level === 'lotto') return this.unlockedLotto;
+    if (level === 'battle') return this.unlockedBattle;
+    return this.unlockedDart;
   }
   /** 关卡 → 该关节点表 */
   private nodeById(level: LevelId): Record<string, { requires: string[]; cost: number }> {
-    return level === 'lotto' ? LOTTO_NODE_BY_ID : NODE_BY_ID;
+    if (level === 'lotto') return LOTTO_NODE_BY_ID;
+    if (level === 'battle') return BATTLE_NODE_BY_ID;
+    return NODE_BY_ID;
   }
 
   /** 前置满足 & 未拥有 & 金币足够 */
@@ -229,6 +269,7 @@ export class GameState {
     this.coins -= node.cost;
     this.ownedSet(level).add(id);
     if (level === 'lotto') this.cachedLottoStats = null;
+    else if (level === 'battle') this.cachedBattleStats = null;
     else this.cachedStats = null;
     this.save();
     return true;
@@ -307,9 +348,11 @@ export class GameState {
     this.maxCombo = 0;
     this.unlockedDart = new Set(['core']);
     this.unlockedLotto = new Set(['lcore']);
+    this.unlockedBattle = new Set(['bcore']);
     this.lotto = { ...DEFAULT_LOTTO };
     this.cachedStats = null;
     this.cachedLottoStats = null;
+    this.cachedBattleStats = null;
     try {
       localStorage.removeItem(SAVE_KEY);
       localStorage.removeItem(LEGACY_KEY); // 连同可能残留的老 key 一起清掉，避免复活
@@ -349,5 +392,18 @@ function applyLottoEffect(s: LottoStats, e: SkillEffect): void {
     case 'lottoJackpotMult': s.jackpotMult += e.value; break;
     case 'lottoFreeTicket': s.freeTicket += e.value; break;
     // 飞镖专属 kinds 不会出现在彩票节点；default 无操作
+  }
+}
+
+/** 打怪技能效果累加到 BattleStats */
+function applyBattleEffect(s: BattleStats, e: SkillEffect): void {
+  switch (e.kind) {
+    case 'battleDamage': s.damage += e.value; break;
+    case 'battleCooldown': s.cooldown += e.value; break;
+    case 'battleMaxHp': s.maxHp += e.value; break;
+    case 'battleCrit': s.crit += e.value; break;
+    case 'battleLifesteal': s.lifesteal += e.value; break;
+    case 'battleCoin': s.coinBonus += e.value; break;
+    // critMult 固定 2，不受技能影响
   }
 }

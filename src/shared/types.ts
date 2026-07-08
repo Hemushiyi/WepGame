@@ -2,11 +2,21 @@
 
 export type Vec2 = { x: number; y: number };
 
-/** 技能分支（飞镖四分支 + 彩票三分支） */
-export type SkillBranch = 'target' | 'speed' | 'pet' | 'combo' | 'luck' | 'economy' | 'perk';
+/** 技能分支（飞镖四分支 + 彩票三分支 + 打怪三分支） */
+export type SkillBranch =
+  | 'target'
+  | 'speed'
+  | 'pet'
+  | 'combo'
+  | 'luck'
+  | 'economy'
+  | 'perk'
+  | 'power'
+  | 'agility'
+  | 'vitality';
 
 /** 关卡 id：每个关卡有自己独立的技能树与技能集合 */
-export type LevelId = 'dart' | 'lotto';
+export type LevelId = 'dart' | 'lotto' | 'battle';
 
 /** 单个技能节点的效果（解锁后累加到派生属性上） */
 export type SkillEffect =
@@ -31,7 +41,14 @@ export type SkillEffect =
   | { kind: 'lottoPityCap'; value: number } // 各档 maxPity 加成
   | { kind: 'lottoPrizeMult'; value: number } // 全档奖金倍率（加法）
   | { kind: 'lottoJackpotMult'; value: number } // 头奖档奖金额外倍率（加法）
-  | { kind: 'lottoFreeTicket'; value: number }; // 购票免费概率（加法，0..0.3）
+  | { kind: 'lottoFreeTicket'; value: number } // 购票免费概率（加法，0..0.3）
+  // ---- 打怪技能（仅作用于打怪关卡）----
+  | { kind: 'battleDamage'; value: number } // 每剑伤害（加法）
+  | { kind: 'battleCooldown'; value: number } // 挥剑冷却（毫秒，加法，通常为负）
+  | { kind: 'battleMaxHp'; value: number } // 最大血量（加法）
+  | { kind: 'battleCrit'; value: number } // 暴击概率（加法，0..1）
+  | { kind: 'battleLifesteal'; value: number } // 每次命中回血（加法）
+  | { kind: 'battleCoin'; value: number }; // 击杀金币加成（加法比例）
 
 /** 技能树节点 */
 export interface SkillNode {
@@ -78,6 +95,17 @@ export interface LottoStats {
   prizeMult: number; // 全档奖金倍率（加法）
   jackpotMult: number; // 头奖档奖金的额外倍率（加法）
   freeTicket: number; // 购票免费概率（0..0.3）
+}
+
+/** 打怪关卡的派生属性（由打怪技能树解锁节点累加） */
+export interface BattleStats {
+  damage: number; // 每剑伤害（整数，基础 1）
+  cooldown: number; // 挥剑冷却（毫秒，基础 ~380）
+  maxHp: number; // 最大血量（基础 5）
+  crit: number; // 暴击概率（0..1）
+  critMult: number; // 暴击倍率（固定 2）
+  lifesteal: number; // 每次命中回血（整数）
+  coinBonus: number; // 击杀金币加成（加法比例）
 }
 
 /** 飞镖运行状态 */

@@ -2,6 +2,8 @@ import { GameState, LOTTO_UNLOCK_TOTAL } from './shared/state';
 import { Game } from './dart/game';
 import { ALL_NODES, NODE_BY_ID, getEdges } from './dart/skills';
 import { ALL_LOTTO_NODES, LOTTO_NODE_BY_ID, getLottoEdges } from './lottery/skills';
+import { ALL_BATTLE_NODES, BATTLE_NODE_BY_ID, getBattleEdges } from './battle/skills';
+import { Battle } from './battle/game';
 import { Lottery } from './lottery/lottery';
 import { audio } from './shared/audio';
 import type { LevelId, SkillNode } from './shared/types';
@@ -72,12 +74,22 @@ export function buildApp(state: GameState): Game {
               <div class="lv-lock-text" id="lottoCardLockText">累计 0/500</div>
             </div>
           </button>
+          <button class="level-card" id="cardBattle">
+            <span class="lv-icon">⚔️</span>
+            <span class="lv-name">打怪场</span>
+            <span class="lv-desc">横版打怪 · 点屏挥剑赚金币</span>
+          </button>
         </div>
       </div>
 
       <!-- 飞镖关卡 -->
       <div class="screen screen-dart" id="screenDart">
         <canvas id="game"></canvas>
+      </div>
+
+      <!-- 打怪关卡 -->
+      <div class="screen screen-battle" id="screenBattle">
+        <canvas id="battleCanvas"></canvas>
       </div>
 
       <!-- 彩票关卡（Lottery 类挂这里） -->
@@ -171,6 +183,7 @@ export function buildApp(state: GameState): Game {
   const screenSelect = app.querySelector<HTMLDivElement>('#screenSelect')!;
   const screenDart = app.querySelector<HTMLDivElement>('#screenDart')!;
   const screenLotto = app.querySelector<HTMLDivElement>('#screenLotto')!;
+  const screenBattle = app.querySelector<HTMLDivElement>('#screenBattle')!;
   const homeBtn = app.querySelector<HTMLButtonElement>('#homeBtn')!;
   const skillBtn = app.querySelector<HTMLButtonElement>('#skillBtn')!;
 
@@ -218,6 +231,10 @@ export function buildApp(state: GameState): Game {
   // ---- 彩票（页面，挂 #screenLotto）----
   const lottery = new Lottery(state, () => refreshCoins(), () => go('select'), screenLotto);
 
+  // ---- 打怪（页面，挂 #screenBattle 的画布）----
+  const battleCanvas = app.querySelector<HTMLCanvasElement>('#battleCanvas')!;
+  const battle = new Battle(battleCanvas, state, { onCoins: () => refreshCoins() });
+
   // ---- 关卡解锁态：派生自 state.totalEarned，无需持久化。----
   const cardLotto = app.querySelector<HTMLButtonElement>('#cardLotto')!;
   const lottoCardLock = app.querySelector<HTMLDivElement>('#lottoCardLock')!;
@@ -248,20 +265,27 @@ export function buildApp(state: GameState): Game {
   }
 
   // ---- 屏幕路由 ----
-  let current: 'select' | 'dart' | 'lotto' = 'select';
-  function go(name: 'select' | 'dart' | 'lotto'): void {
+  let current: 'select' | 'dart' | 'lotto' | 'battle' = 'select';
+  function go(name: 'select' | 'dart' | 'lotto' | 'battle'): void {
     if (name === current) return;
     const prev = current;
     current = name;
     screenSelect.classList.toggle('active', name === 'select');
     screenDart.classList.toggle('active', name === 'dart');
     screenLotto.classList.toggle('active', name === 'lotto');
+    screenBattle.classList.toggle('active', name === 'battle');
     // 飞镖循环：进入才跑，离开即停（省 CPU、避免在隐藏画布上空投）
     if (prev === 'dart') game.stop();
     if (name === 'dart') {
       // 画布刚从 display:none 显示，强制重算尺寸再开循环，避免首帧用 0/旧尺寸渲染
       window.dispatchEvent(new Event('resize'));
       game.start();
+    }
+    // 打怪循环：同飞镖，进页 start、离页 stop（stop 时落盘本局金币）
+    if (prev === 'battle') battle.stop();
+    if (name === 'battle') {
+      window.dispatchEvent(new Event('resize'));
+      battle.start();
     }
     // 彩票页面：进入刷新，离开静默结算
     if (prev === 'lotto') lottery.leave();
@@ -275,6 +299,7 @@ export function buildApp(state: GameState): Game {
   }
 
   app.querySelector<HTMLButtonElement>('#cardDart')!.addEventListener('click', () => go('dart'));
+  app.querySelector<HTMLButtonElement>('#cardBattle')!.addEventListener('click', () => go('battle'));
   cardLotto.addEventListener('click', () => {
     if (!state.lottoUnlocked()) {
       showToast(
@@ -285,7 +310,7 @@ export function buildApp(state: GameState): Game {
     go('lotto');
   });
   homeBtn.addEventListener('click', () => go('select'));
-  skillBtn.addEventListener('click', () => openSkill(current === 'lotto' ? 'lotto' : 'dart'));
+  skillBtn.addEventListener('click', () => openSkill(current));
 
   // 金币变动时同步 HUD、彩票页面与彩票解锁状态（飞镖 earn 时保持新鲜）。
   // refreshCoins 是函数声明（提升），lottery / refreshLottoLock 在运行期已初始化。
@@ -329,6 +354,22 @@ export function buildApp(state: GameState): Game {
     canBuy: (id) => state.canBuy('lotto', id),
     buy: (id) => state.buy('lotto', id),
   };
+  const battleSpec: TreeSpec = {
+    level: 'battle',
+    title: '⚔️ 打怪技能树',
+    nodes: ALL_BATTLE_NODES,
+    nodeById: BATTLE_NODE_BY_ID,
+    edges: getBattleEdges(),
+    branches: {
+      power: { name: '力量', color: '#ea4754' },
+      agility: { name: '敏捷', color: '#ffd45e' },
+      vitality: { name: '体质', color: '#5fce86' },
+    },
+    owned: (id) => state.owned('battle', id),
+    prereqMet: (id) => state.prereqMet('battle', id),
+    canBuy: (id) => state.canBuy('battle', id),
+    buy: (id) => state.buy('battle', id),
+  };
 
   const modal = app.querySelector<HTMLDivElement>('#skillModal')!;
   const closeBtn = app.querySelector<HTMLButtonElement>('#closeSkill')!;
@@ -345,8 +386,9 @@ export function buildApp(state: GameState): Game {
   // 刚购买的节点 id：触发一次解锁扩散动画，renderTree 渲染一帧后即清空。
   let justBoughtId: string | null = null;
 
-  function openSkill(level: LevelId): void {
-    spec = level === 'lotto' ? lottoSpec : dartSpec;
+  function openSkill(level: 'select' | LevelId): void {
+    if (level === 'select') return; // 选择页不开技能（按钮已隐藏，防御）
+    spec = level === 'lotto' ? lottoSpec : level === 'battle' ? battleSpec : dartSpec;
     selectedId = null;
     skillTitle.textContent = spec.title;
     // 分支图例：按当前树动态生成
@@ -376,6 +418,7 @@ export function buildApp(state: GameState): Game {
     if (confirm('确定重置全部存档？（金币与技能全部清空）')) {
       state.reset();
       if (current === 'dart') game.syncAfterBuy();
+      if (current === 'battle') battle.syncAfterBuy();
       selectedId = null;
       updateCoins();
       updateScore();
@@ -393,6 +436,7 @@ export function buildApp(state: GameState): Game {
     if (spec.buy(selectedId)) {
       audio.sfx('skill');
       if (spec.level === 'dart') game.syncAfterBuy();
+      else if (spec.level === 'battle') battle.syncAfterBuy();
       refreshCoins(); // 统一走 refreshCoins（含 lottery.syncCoins / refreshLottoLock）
       justBoughtId = selectedId; // 标记刚解锁 → renderTree 画扩散光圈
       renderTree();

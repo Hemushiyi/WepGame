@@ -30,7 +30,8 @@ void _petJitter;
 // 每行严格 16 字符。
 
 // idle 帧：双臂自然垂下，右手持镖于身侧（镖杆藏于身侧，不外伸）。
-const CHAR_IDLE: string[] = [
+// 导出供打怪关卡复用为「主角 idle」（同一角色宇宙，风格一致）。
+export const CHAR_IDLE: string[] = [
   '....kkkkk.......',
   '...khhhhhhk.....',
   '..khHHHHHHk.....',
@@ -86,7 +87,7 @@ const CHAR_THROW: string[] = [
   'kkkkk...kkkkk...',
 ];
 
-const CHAR_SCALE = 2;
+export const CHAR_SCALE = 2;
 const CHAR_W = CHAR_IDLE[0].length * CHAR_SCALE; // 32
 const CHAR_H = CHAR_IDLE.length * CHAR_SCALE; // 48
 

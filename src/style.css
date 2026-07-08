@@ -177,7 +177,8 @@ body {
   overflow: hidden;
 }
 
-#game {
+#game,
+#battleCanvas {
   position: absolute;
   inset: 0;
   display: block;
@@ -307,6 +308,11 @@ body {
 
 /* 飞镖关卡：画布铺满（#game 已 position:absolute inset:0） */
 .screen-dart {
+  background: #0b0a1f;
+}
+
+/* 打怪关卡：画布铺满（同飞镖） */
+.screen-battle {
   background: #0b0a1f;
 }
 
