@@ -244,6 +244,12 @@ body {
   font-size: var(--ui-fs);
   color: var(--accent);
 }
+.modal-progress {
+  font-family: var(--pixel);
+  font-size: var(--ui-fs-sm);
+  color: var(--cyan);
+  opacity: 0.9;
+}
 .btn-close {
   font-family: var(--pixel);
   font-size: var(--ui-fs-sm);
@@ -328,6 +334,9 @@ body {
   pointer-events: none;
   dominant-baseline: middle;
 }
+#tree .ico.dim {
+  filter: grayscale(1); /* 未解锁节点图标去色变灰 */
+}
 #tree .avail {
   animation: pulse 1.1s ease-in-out infinite;
 }
@@ -338,6 +347,29 @@ body {
   }
   50% {
     opacity: 1;
+  }
+}
+
+/* 节点 hover（桌面端）：外环提亮加粗，提示可点 */
+#tree .node:hover .ring {
+  stroke: #b6f6ff;
+  stroke-width: 1.1;
+}
+
+/* 购买成功的扩散光圈：从节点向外炸开并渐隐 */
+#tree .unlock-burst {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: unlock-burst 0.55s ease-out forwards;
+}
+@keyframes unlock-burst {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
   }
 }
 
@@ -482,14 +514,15 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
-/* 档位选择条 */
+/* 档位选择条：6 档自动换行（竖屏两行铺满），避免按钮挤成一条窄缝 */
 .lotto-tiers {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .lotto-tier {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 78px;
+  min-width: 78px;
   min-height: 40px;
   display: flex;
   flex-direction: column;
@@ -1091,6 +1124,10 @@ button:focus-visible,
   #tree .avail {
     animation: none;
     opacity: 0.85;
+  }
+  #tree .unlock-burst {
+    animation: none;
+    opacity: 0;
   }
   .lotto-result .pill,
   .lotto-tier,

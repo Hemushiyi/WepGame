@@ -57,6 +57,7 @@ export function buildApp(state: GameState): Game {
       <div class="modal-card">
         <div class="modal-head">
           <div class="modal-title">技能拓扑 · SKILL TREE</div>
+          <div class="modal-progress" id="modalProgress">▣ 0/29</div>
           <div class="modal-coins" id="modalCoins">🪙 0</div>
           <button class="btn-close" id="closeSkill">✕</button>
         </div>
@@ -95,6 +96,7 @@ export function buildApp(state: GameState): Game {
   const coinsEl = app.querySelector<HTMLSpanElement>('#coins b')!;
   const scoreEl = app.querySelector<HTMLSpanElement>('#score b')!;
   const modalCoinsEl = app.querySelector<HTMLSpanElement>('#modalCoins')!;
+  const modalProgressEl = app.querySelector<HTMLSpanElement>('#modalProgress')!;
   const footEarnedEl = app.querySelector<HTMLSpanElement>('#footEarned')!;
 
   let prevCoins = state.coins;
@@ -236,6 +238,8 @@ export function buildApp(state: GameState): Game {
   const detailCost = app.querySelector<HTMLSpanElement>('#detailCost')!;
 
   let selectedId: string | null = null;
+  // 刚购买的节点 id：触发一次解锁扩散动画，renderTree 渲染一帧后即清空。
+  let justBoughtId: string | null = null;
 
   const openModal = () => {
     modal.classList.add('open');
@@ -278,6 +282,7 @@ export function buildApp(state: GameState): Game {
       audio.sfx('skill');
       game.syncAfterBuy();
       refreshCoins(); // 统一走 refreshCoins（含 lottery.syncCoins / refreshLottoLock）
+      justBoughtId = selectedId; // 标记刚解锁 → renderTree 画扩散光圈
       renderTree();
       renderDetail();
     }
@@ -372,7 +377,11 @@ export function buildApp(state: GameState): Game {
       });
       line.setAttribute(
         'stroke',
-        active ? BRANCH_COLOR[b.branch] : half ? '#8a82b8' : '#3a3358',
+        active
+          ? BRANCH_COLOR[b.branch]
+          : half
+            ? BRANCH_COLOR[b.branch] // 已解锁→后继：染目标分支色，体现路径延续
+            : '#3a3358',
       );
       line.setAttribute('stroke-width', active ? '0.9' : '0.6');
       line.setAttribute('stroke-dasharray', active ? '' : '1.6,1.4');
@@ -380,6 +389,10 @@ export function buildApp(state: GameState): Game {
     }
 
     // 节点
+    // 成本文字先收集，循环末统一渲染到顶层 labelsG（见函数尾），确保不被
+    // 后渲染节点的实心圆盘按 z 序盖住（成本文字原本画在节点 g 内部下方，
+    // 整个 g 会被后续 append 的节点 g 整体覆盖）。
+    const costEls: SVGElement[] = [];
     for (const node of ALL_NODES) {
       const st = nodeState(node.id);
       const color = BRANCH_COLOR[node.branch];
@@ -388,32 +401,66 @@ export function buildApp(state: GameState): Game {
       g.style.cursor = st === 'locked' ? 'not-allowed' : 'pointer';
 
       const r = node.id === 'core' ? 4.4 : 3.7;
+      const owned = st === 'owned';
+      // canBuy：available 且金币足够 —— 当前最该点的节点，单独给金色强脉冲。
+      const canBuy = st === 'available' && state.canBuy(node.id);
+      // availPoor：前置已满足但金币不足 —— 路径已打通、就差钱，需独立区分于 locked。
+      const availPoor = st === 'available' && !canBuy;
+
+      // ① 透明大命中圆：扩大可点区域（移动端触摸目标）。半径取最近邻间距的一半
+      //    （全树最小节点间距 10），既显著放大热区，又不与相邻 hit 圆重叠抢点。
+      const hit = svgEl('circle', {
+        class: 'hit',
+        r: '5',
+        fill: 'transparent',
+        'pointer-events': 'all',
+      });
+      g.appendChild(hit);
+
+      // ② 外环：owned 分支色；available（钱不够）也用分支色细环——路径已打通的归属标记，
+      //    与 locked 的暗环区分，体现“这条线激活了，就差钱”的延续感。hover 由 CSS 提亮。
       const ring = svgEl('circle', {
+        class: 'ring',
         r: String(r + 1.0),
         fill: 'none',
-        stroke: st === 'owned' ? color : '#1c1838',
+        stroke: owned
+          ? color
+          : canBuy
+            ? '#ffd966'
+            : st === 'available'
+              ? color
+              : '#332b52',
         'stroke-width': '0.6',
       });
       g.appendChild(ring);
 
-      const fill =
-        st === 'owned'
-          ? color
-          : st === 'available'
-            ? '#241d44'
-            : '#16122c';
+      // ③ 圆盘四态：
+      //   locked 前置未满足 → 灰 + 半透（锁死）；
+      //   availPoor 前置满足但金币不足 → 淡分支色 + 分支色描边（路径已激活，就差钱）；
+      //   canBuy 钱够可买 → 暗金底 + 金描边 + 脉冲（行动号召）；
+      //   owned 已解锁 → 分支色实色（已点亮）。
       const dot = svgEl('circle', {
+        class: 'dot',
         r: String(r),
-        fill,
-        stroke: color,
-        'stroke-width': st === 'available' ? '0.7' : '0.4',
+        fill: owned ? color : canBuy ? '#3a2f10' : availPoor ? color : '#2a2a3c',
+        'fill-opacity': availPoor ? '0.2' : '1',
+        stroke: owned
+          ? color
+          : canBuy
+            ? '#ffd966'
+            : availPoor
+              ? color
+              : '#5a5670',
+        'stroke-width': canBuy ? '1.1' : availPoor ? '0.8' : '0.5',
         opacity: st === 'locked' ? '0.5' : '1',
       });
-      if (st === 'available') dot.classList.add('avail');
+      if (canBuy) dot.classList.add('avail');
       g.appendChild(dot);
 
-      // 图标
+      // 图标：未解锁（locked / 金币不足）去色变灰（.ico.dim）；owned 与 canBuy 保持彩色。
       const icon = svgEl('text', {
+        class:
+          st === 'locked' || (st === 'available' && !canBuy) ? 'ico dim' : 'ico',
         x: '0',
         y: '1.3',
         'text-anchor': 'middle',
@@ -422,31 +469,48 @@ export function buildApp(state: GameState): Game {
       icon.textContent = node.icon;
       g.appendChild(icon);
 
-      // 成本
-      if (node.cost > 0) {
+      // ④ 刚解锁的节点画一道扩散光圈（购买成功反馈，见 .unlock-burst 动画）。
+      if (justBoughtId === node.id) {
+        const burst = svgEl('circle', {
+          class: 'unlock-burst',
+          r: String(r + 0.5),
+          fill: 'none',
+          stroke: color,
+          'stroke-width': '1.2',
+        });
+        g.appendChild(burst);
+      }
+
+      // ⑤ 原生 tooltip：hover 显示节点全名（桌面端；移动端长按部分浏览器支持）。
+      const title = svgEl('title');
+      title.textContent = `${node.icon} ${node.name}`;
+      g.appendChild(title);
+
+      // 成本：locked（前置未满足）的收费节点不显示价格——还早，价格只是视觉噪音；
+      // owned 显示 ✓、canBuy 显示金色价、availPoor 显示暗灰价（让玩家知道目标价）。
+      if (!(st === 'locked' && node.cost > 0)) {
         const cost = svgEl('text', {
-          x: '0',
-          y: String(r + 4.0),
+          x: String(node.pos.x),
+          y: String(node.pos.y + r + 4.0),
           'text-anchor': 'middle',
           'font-size': '2.6',
-          fill: state.canBuy(node.id)
-            ? '#ffd966'
-            : st === 'owned'
-              ? '#7df9ff'
-              : '#6a648c',
+          // 深色描边底（paint-order 先描边后填充）：连线穿过文字时仍可读。
+          'paint-order': 'stroke',
+          stroke: '#0b0a1f',
+          'stroke-width': '0.7',
+          'stroke-linejoin': 'round',
+          fill:
+            node.cost > 0
+              ? state.canBuy(node.id)
+                ? '#ffd966'
+                : st === 'owned'
+                  ? '#7df9ff'
+                  : '#6a648c'
+              : '#7df9ff',
         });
-        cost.textContent = st === 'owned' ? '✓' : `🪙${node.cost}`;
-        g.appendChild(cost);
-      } else {
-        const cost = svgEl('text', {
-          x: '0',
-          y: String(r + 4.0),
-          'text-anchor': 'middle',
-          'font-size': '2.6',
-          fill: '#7df9ff',
-        });
-        cost.textContent = '起点';
-        g.appendChild(cost);
+        cost.textContent =
+          node.cost > 0 ? (st === 'owned' ? '✓' : `🪙${node.cost}`) : '起点';
+        costEls.push(cost);
       }
 
       g.addEventListener('click', () => {
@@ -457,19 +521,31 @@ export function buildApp(state: GameState): Game {
         renderDetail();
       });
 
+      // ⑥ 选中圈：加粗 + 长虚线，密集区域更醒目。
       if (selectedId === node.id) {
         const sel = svgEl('circle', {
-          r: String(r + 1.6),
+          class: 'sel',
+          r: String(r + 1.8),
           fill: 'none',
           stroke: '#ffffff',
-          'stroke-width': '0.4',
-          'stroke-dasharray': '1,1',
+          'stroke-width': '0.7',
+          'stroke-dasharray': '1.4,0.8',
         });
         g.insertBefore(sel, g.firstChild);
       }
 
       content.appendChild(g);
     }
+    justBoughtId = null; // 扩散光圈只渲染一帧（动画由 CSS 自行播放完毕）
+
+    // 文字层置顶：所有成本标签画在全部节点之上，杜绝被后渲染圆盘遮挡；
+    // pointer-events:none 让点击穿透文字落到下方节点（避免文字挡住节点点击）。
+    const labelsG = svgEl('g', { id: 'treeLabels', 'pointer-events': 'none' });
+    content.appendChild(labelsG);
+    for (const el of costEls) labelsG.appendChild(el);
+
+    // 解锁进度
+    modalProgressEl.textContent = `▣ ${ALL_NODES.filter((n) => state.owned(n.id)).length}/${ALL_NODES.length}`;
 
     // 重建内容后重新应用当前视图变换。
     applyView();

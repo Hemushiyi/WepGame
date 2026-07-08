@@ -365,17 +365,19 @@ export class Game {
     const { points, label, color, bull } = this.scoreFor(dist, stats);
 
     let mult = 1;
+    // 宠物命中奖励按 petReward 缩放（默认 10%）；玩家为全额。
+    const petMul = d.fromPet ? stats.petReward : 1;
     if (points > 0) {
       // 金币只拿基础分（控制经济）；分数享受连击倍率（冲高分）。
       // 连击仅由玩家投掷累积，宠物不参与（避免无脑叠连击）。
-      this.state.earn(points);
+      this.state.earn(Math.round(points * petMul));
       if (!d.fromPet) {
         this.combo += bull ? 2 : 1;
         mult = this.comboMult();
         this.state.recordCombo(this.combo);
         this.cb.onCombo(this.combo, mult);
       }
-      this.state.addScore(Math.round(points * mult));
+      this.state.addScore(Math.round(points * mult * petMul));
       this.cb.onCoins(this.state.coins);
       this.cb.onScore(this.state.score);
     } else if (!d.fromPet) {
@@ -390,7 +392,7 @@ export class Game {
       if (bull) {
         juice.shake(d.fromPet ? 3 : 7);
         juice.burst(d.target.x, d.target.y, color, d.fromPet ? 10 : 20);
-        juice.impact(d.target.x, d.target.y, color, true); // 中心命中：冲击波 + 全屏白闪
+        juice.impact(d.target.x, d.target.y, color, true); // 中心命中：更大的冲击波环（白闪已移除）
         audio.sfx('bull');
         if (!d.fromPet && !this.obBull) {
           this.obBull = true;
@@ -411,9 +413,11 @@ export class Game {
       audio.sfx('miss');
     }
 
+    // 飘字显示实际获得：宠物按缩放后的奖励，避免“飘 +50 却只给 5”的误导
+    const gain = points > 0 ? Math.round(points * mult * petMul) : 0;
     this.floats.push({
       pos: { x: d.target.x, y: d.target.y - 10 },
-      text: points > 0 ? `+${points}` : 'MISS',
+      text: points > 0 ? `+${gain}` : 'MISS',
       color: points > 0 ? color : '#e84753',
       life: 900,
       vy: -28,

@@ -17,6 +17,7 @@ export type SkillEffect =
   | { kind: 'petCount'; value: number } // 增加宠物数量
   | { kind: 'petInterval'; value: number } // 宠物投掷间隔（毫秒，加法）
   | { kind: 'petAccuracy'; value: number } // 宠物精准度（0..1）
+  | { kind: 'petReward'; value: number } // 宠物命中奖励占玩家的比例（加法）
   | { kind: 'comboCap'; value: number } // 连击倍率上限（加法）
   | { kind: 'comboShield'; value: number } // 失误时保留的连击比例（0..1）
   | { kind: 'windResist'; value: number }; // 抵御风向影响（0..1）
@@ -51,6 +52,7 @@ export interface DerivedStats {
   petCount: number;
   petInterval: number;
   petAccuracy: number;
+  petReward: number; // 宠物命中奖励占玩家的比例（基础 0.1）
   comboCap: number; // 连击倍率上限（基础 2.0）
   comboShield: number; // 失误时保留的连击比例（0..1）
   windResist: number; // 抵御风向影响（0..1）

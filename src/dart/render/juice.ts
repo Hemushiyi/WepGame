@@ -18,7 +18,7 @@ interface Particle {
   size: number; // 1~2 像素
 }
 
-/** 命中冲击波：一个向外扩张的方形像素环（+ 中心命中的全屏白闪）。 */
+/** 命中冲击波：一个向外扩张的方形像素环（中心命中的环更大）。 */
 interface Impact {
   x: number;
   y: number;
@@ -26,7 +26,7 @@ interface Impact {
   life: number; // 剩余 ms
   maxLife: number; // 初始 ms
   maxR: number; // 扩张到的最大半边长（像素）
-  bull: boolean; // 是否中心命中（触发白闪）
+  bull: boolean; // 是否中心命中（冲击波环更大）
 }
 
 /** 粒子数组上限，防止无限增长。 */
@@ -104,7 +104,7 @@ function burst(x: number, y: number, color: string, count: number = 10): void {
 
 /**
  * 在 (x, y) 触发一个向外扩张的方形冲击波环；bull=true（中心命中）时
- * 额外附带一个短暂的整屏白闪，强化"爆中心"的打击感。
+ * 冲击波环更大（IMPACT_R_BULL），强化“爆中心”的打击感。
  */
 function impact(x: number, y: number, color: string, bull: boolean = false): void {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -212,13 +212,7 @@ function draw(ctx: CanvasRenderingContext2D): void {
     ctx.strokeStyle = im.color;
     ctx.lineWidth = 2;
     ctx.strokeRect(im.x - r, im.y - r, r * 2, r * 2);
-    // 中心命中：前 ~65% 生命周期叠一个全屏白闪，强反馈"爆中心"
-    if (im.bull && t < 0.65) {
-      const fa = 0.5 * (1 - t / 0.65);
-      ctx.globalAlpha = prevAlpha * fa;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    }
+    // （曾在此叠全屏白闪反馈中心命中，因晃眼已移除；中心命中仅靠更大的冲击波环 + 震动 + 音效）
   }
   ctx.lineWidth = prevLineWidth;
 

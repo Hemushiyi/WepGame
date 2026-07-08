@@ -49,6 +49,7 @@ const BASE: DerivedStats = {
   petCount: 0,
   petInterval: 2500,
   petAccuracy: 0.2,
+  petReward: 0.1,
   comboCap: 2,
   comboShield: 0,
   windResist: 0.1,
@@ -148,6 +149,7 @@ export class GameState {
     s.doubleShotChance = Math.min(0.6, Math.max(0, s.doubleShotChance));
     s.magnet = Math.min(0.7, Math.max(0, s.magnet));
     s.petAccuracy = Math.min(0.9, Math.max(0, s.petAccuracy));
+    s.petReward = Math.min(1, Math.max(0.1, s.petReward));
     s.petInterval = Math.max(600, s.petInterval);
     s.petCount = Math.max(0, s.petCount);
     s.comboCap = Math.min(8, Math.max(1, s.comboCap));
@@ -265,6 +267,7 @@ function applyEffect(s: DerivedStats, e: SkillEffect): void {
     case 'petCount': s.petCount += e.value; break;
     case 'petInterval': s.petInterval += e.value; break;
     case 'petAccuracy': s.petAccuracy += e.value; break;
+    case 'petReward': s.petReward += e.value; break;
     case 'comboCap': s.comboCap += e.value; break;
     case 'comboShield': s.comboShield += e.value; break;
     case 'windResist': s.windResist += e.value; break;

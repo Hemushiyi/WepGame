@@ -1,344 +1,25 @@
 import { GameState, LOTTO_UNLOCK_TOTAL } from '../shared/state';
 import { audio } from '../shared/audio';
+import {
+  TIERS,
+  VARIANTS,
+  topPrize,
+  genBoard,
+  evalBoard,
+  type TierDef,
+  type Sym,
+} from './engine';
 
-/** 档位→音调偏移：铜 0 / 银 +5 / 金 +12 半音，越高档音色越亮 */
-function tierSemi(t: TierDef): number {
-  return t.variant === 'rush' ? 12 : t.variant === 'line' ? 5 : 0;
-}
-
-// ===== 刮刮乐（彩票）小游戏 =====
-// 玩家用金币购买彩票 → 手指/鼠标刮开银色涂层 → 3×3 格子中
-// 凑齐 3 个相同符号即中奖（4 连 ×2、5 连 ×3）。
-//
-// 开奖结果在「购买时」就已确定（与真实刮刮乐一致）：genBoard 先掷出
-// 中/不中与中奖符号，再据此构造棋盘 —— 中奖局恰好放 3 个该符号，
-// 不中奖局保证没有任何奖符达到 3 个。这样既能精确控制期望返奖率（RTP），
-// 又避免出现「两个不同符号同时三连」之类的尴尬局面。
+// ===== 刮刮乐（彩票）UI =====
+// 纯概率 / 生成 / 复盘逻辑全部在 ./engine（无 DOM，便于仿真验证 RTP）。
+// 本文件只负责：模态 DOM、购买流程、刮开交互、画布渲染（卡面 + 涂层）、结算反馈。
 //
 // 幸运值（pity，按档位独立累计）：该档连续未中 +1、中奖清零、封顶 maxPity；
-// 每点小幅抬升该档中奖概率，软化连败。整体 RTP 由 winChance +
-// maxPity×LUCK_BONUS_PER_PITY 决定并经仿真封顶（见 SIM-VERIFIED）；
-// PER_DRAW_CAP 是单次中奖概率的硬天花板（兜底，非 RTP 封顶手段）。
-
-interface Sym {
-  icon: string;
-  prize: number; // 0 表示未中占位符（💩）
-}
-
-interface TierDef {
-  id: string;
-  name: string;
-  icon: string;
-  cost: number;
-  accent: string;
-  /** 玩法变体：match3=三连成 / line=连成线 / rush=金库冲刺（金币总和达标） */
-  variant: 'match3' | 'line' | 'rush';
-  /** 基础中奖概率（幸运值为 0 时），直接决定该档位基线 RTP */
-  winChance: number;
-  /** 该档位幸运值上限（连续未中次数封顶） */
-  maxPity: number;
-  /** symbols 末位为未中符号；其余为奖符（按“优先消耗奖符”排序，便于填充） */
-  symbols: Sym[];
-  /** 与 symbols[0..n-1]（不含末位）一一对应，和为 1 */
-  winWeights: number[];
-}
-
-// 每点幸运值增加的中奖概率（加法）。与 maxPity 共同决定各档封顶 RTP（见 SIM-VERIFIED）。
-const LUCK_BONUS_PER_PITY = 0.006;
-// 单次中奖概率硬上限（兜底护栏：即便误调参也不会让单次中奖率超过此值；
-// 当前各档满幸运值时为 0.33/0.27/0.26，均远低于 0.4，故正常不触发）。
-const PER_DRAW_CAP = 0.4;
-
-// 三档彩票：铜 / 银 / 金。成本与奖金逐级放大，基线 RTP ~0.82–0.87，
-// 略低于 100% 的负期望，作为金币消耗口子（金币主要靠投飞镖赚取）。
-// 三档各用一种玩法（match3 / line / rush），手感与认知模式都不同。
-// 注：cost 与 prize 同比缩放保持 RTP 不变；价格已上调（50/250/1000）。
-const TIERS: TierDef[] = [
-  {
-    id: 'bronze', name: '铜票', icon: '🥉', cost: 50, accent: '#d98a3a', variant: 'match3',
-    winChance: 0.30, maxPity: 5,
-    symbols: [
-      { icon: '🪙', prize: 60 }, { icon: '💎', prize: 125 }, { icon: '⭐', prize: 400 }, { icon: '7️⃣', prize: 1000 },
-      { icon: '💩', prize: 0 },
-    ],
-    winWeights: [0.60, 0.25, 0.12, 0.03],
-  },
-  {
-    id: 'silver', name: '银票', icon: '🥈', cost: 250, accent: '#aab4c4', variant: 'line',
-    winChance: 0.22, maxPity: 8,
-    symbols: [
-      { icon: '🪙', prize: 300 }, { icon: '💎', prize: 750 }, { icon: '⭐', prize: 2000 }, { icon: '7️⃣', prize: 7500 },
-      { icon: '💣', prize: 0 }, { icon: '💩', prize: 0 },
-    ],
-    winWeights: [0.55, 0.30, 0.12, 0.03],
-  },
-  {
-    id: 'gold', name: '金票', icon: '🥇', cost: 1000, accent: '#ffd45e', variant: 'rush',
-    winChance: 0.20, maxPity: 10,
-    // rush 档：prize 字段 = 格子金币面值（非奖金）。奖金由 evalRush 阶梯决定。
-    symbols: [
-      { icon: '🪙', prize: 1 }, { icon: '💎', prize: 3 }, { icon: '⭐', prize: 5 }, { icon: '7️⃣', prize: 10 },
-      { icon: '➕', prize: 5 }, { icon: '💩', prize: 0 },
-    ],
-    winWeights: [0.50, 0.30, 0.15, 0.05],
-  },
-];
-
-/** 该档最高奖金：match3/line 取奖符最大值；rush 取阶梯顶奖。 */
-function topPrize(t: TierDef): number {
-  if (t.variant === 'rush') return RUSH_LADDER[0].prize;
-  return t.symbols.reduce((m, s) => Math.max(m, s.prize), 0);
-}
-
-// ---------- 随机工具 ----------
-function randInt(n: number): number {
-  return Math.floor(Math.random() * n);
-}
-
-function shuffle<T>(a: T[]): T[] {
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = randInt(i + 1);
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function weightedPick(weights: number[]): number {
-  let r = Math.random();
-  for (let i = 0; i < weights.length; i++) {
-    r -= weights[i];
-    if (r <= 0) return i;
-  }
-  return weights.length - 1;
-}
-
-interface BoardEval {
-  prize: number;
-  sym: Sym | null;
-  indices: number[]; // 中奖符号所在格子下标
-}
-
-// ---- line 变体的 8 条连线（3 行 + 3 列 + 2 斜）----
-const LINES: ReadonlyArray<readonly [number, number, number]> = [
-  [0, 1, 2], [3, 4, 5], [6, 7, 8],
-  [0, 3, 6], [1, 4, 7], [2, 5, 8],
-  [0, 4, 8], [2, 4, 6],
-];
-
-// ---- rush 变体：格子金币面值 + 两档奖金（达标 / 头奖）----
-const RUSH_VALUES: Record<string, number> = {
-  '🪙': 1, '💎': 3, '⭐': 5, '7️⃣': 10, '➕': 5, '💩': 0,
-};
-// 从高到低：evalRush 取第一个达标的 rung。设计成「达标固定奖 + 极稀有头奖」，
-// 让 RTP 由 winChance 单点控制、头奖尾巴可分析（见 SIM-VERIFIED）。
-const RUSH_LADDER: ReadonlyArray<{ min: number; prize: number }> = [
-  { min: 50, prize: 80000 },
-  { min: 30, prize: 4000 },
-];
-const RUSH_TARGET = 30;
-const RUSH_JACKPOT_FRAC = 0.003; // 中奖局中触发头奖(总和≥50)的比例；仿真校准 blended≤0.95
-
-// ============ 复盘（eval）============
-/** match3：奖符出现 ≥3 即中奖，奖金 = 面额 ×(连数−2)（3 连 1×、4 连 2×、5 连 3×） */
-function evalMatch3(grid: Sym[]): BoardEval {
-  const counts: Record<string, { sym: Sym; n: number }> = {};
-  for (const s of grid) (counts[s.icon] ??= { sym: s, n: 0 }).n++;
-  let best: BoardEval = { prize: 0, sym: null, indices: [] };
-  for (const k in counts) {
-    const { sym, n } = counts[k];
-    if (sym.prize > 0 && n >= 3) {
-      const p = sym.prize * (n - 2);
-      if (p > best.prize) {
-        best = {
-          prize: p,
-          sym,
-          indices: grid.map((g, i) => (g.icon === k ? i : -1)).filter((i) => i >= 0),
-        };
-      }
-    }
-  }
-  return best;
-}
-
-/** line：任一横/竖/斜 3 格同奖符即中奖，按面额 1× 计。 */
-function evalLine(grid: Sym[]): BoardEval {
-  let best: BoardEval = { prize: 0, sym: null, indices: [] };
-  for (const ln of LINES) {
-    const [a, b, c] = ln;
-    const s = grid[a];
-    if (s.prize > 0 && s.icon === grid[b].icon && s.icon === grid[c].icon) {
-      if (s.prize > best.prize) best = { prize: s.prize, sym: s, indices: [a, b, c] };
-    }
-  }
-  return best;
-}
-
-/** rush：9 格金币求和，达 RUSH_LADDER 门槛即对应奖金；高亮 top-3 高值格。 */
-function evalRush(grid: Sym[]): BoardEval {
-  let sum = 0;
-  for (const s of grid) sum += RUSH_VALUES[s.icon] ?? 0;
-  for (const rung of RUSH_LADDER) {
-    if (sum >= rung.min) {
-      const indices = grid
-        .map((s, i) => ({ i, v: RUSH_VALUES[s.icon] ?? 0 }))
-        .sort((p, q) => q.v - p.v)
-        .slice(0, 3)
-        .map((o) => o.i);
-      return { prize: rung.prize, sym: null, indices };
-    }
-  }
-  return { prize: 0, sym: null, indices: [] };
-}
-
-/** 按档玩法复盘 */
-function evalBoard(tier: TierDef, grid: Sym[]): BoardEval {
-  if (tier.variant === 'line') return evalLine(grid);
-  if (tier.variant === 'rush') return evalRush(grid);
-  return evalMatch3(grid);
-}
-
-/** 把空格填满：奖符每个至多 2（杜绝额外三连 / 占满整条线），未中符号不限量；
- *  winSym 在中奖局被排除，确保整张票只有一条中奖线。match3 + line 共用。 */
-function fillCells(cells: (Sym | null)[], symbols: Sym[], exclude: Sym | null): void {
-  const counts = new Map<string, number>();
-  for (const c of cells) if (c) counts.set(c.icon, (counts.get(c.icon) ?? 0) + 1);
-  const slots: number[] = [];
-  for (let i = 0; i < cells.length; i++) if (!cells[i]) slots.push(i);
-  shuffle(slots);
-  const miss = symbols[symbols.length - 1];
-  let si = 0;
-  while (si < slots.length) {
-    let placed = false;
-    for (const s of symbols) {
-      if (exclude && s.icon === exclude.icon) continue;
-      const c = counts.get(s.icon) ?? 0;
-      const cap = s.prize > 0 ? 2 : 99;
-      if (c >= cap) continue;
-      cells[slots[si++]] = s;
-      counts.set(s.icon, c + 1);
-      placed = true;
-      if (si >= slots.length) break;
-    }
-    if (!placed) cells[slots[si++]] = miss; // 兜底：未中符号不会改变判定
-  }
-}
-
-// ============ 生成（gen）—— 开奖在购买时确定，据此构造合法棋盘 ============
-function genMatch3(tier: TierDef, wc: number): { grid: Sym[]; eval: BoardEval } {
-  const cells: (Sym | null)[] = new Array(9).fill(null);
-  if (Math.random() < wc) {
-    const winSym = tier.symbols[weightedPick(tier.winWeights)];
-    const idx = shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-    for (let k = 0; k < 3; k++) cells[idx[k]] = winSym;
-    fillCells(cells, tier.symbols, winSym);
-  } else {
-    fillCells(cells, tier.symbols, null); // cap=2 自动杜绝三连 → 必为合法负局
-  }
-  const grid = cells as Sym[];
-  return { grid, eval: evalMatch3(grid) };
-}
-
-function genLine(tier: TierDef, wc: number): { grid: Sym[]; eval: BoardEval } {
-  const cells: (Sym | null)[] = new Array(9).fill(null);
-  if (Math.random() < wc) {
-    const winSym = tier.symbols[weightedPick(tier.winWeights)];
-    const line = LINES[Math.floor(Math.random() * LINES.length)];
-    for (const i of line) cells[i] = winSym;
-    fillCells(cells, tier.symbols, winSym); // 其余 6 格排除 winSym + cap=2 → 仅一条连线
-  } else {
-    fillCells(cells, tier.symbols, null); // cap=2 自动杜绝任一奖符占满整条线 → 合法负局
-  }
-  const grid = cells as Sym[];
-  return { grid, eval: evalLine(grid) };
-}
-
-// ---- rush 专用：面值阶梯式升降，把总和调进目标区间 ----
-function rushPick(tier: TierDef): Sym {
-  // 偏小币，让初始总和常徘徊在 30 附近（最大悬念）。权重对应 symbols 顺序。
-  return tier.symbols[weightedPick([34, 22, 14, 5, 15, 10])];
-}
-function rushSum(grid: Sym[]): number {
-  let s = 0;
-  for (const cell of grid) s += RUSH_VALUES[cell.icon] ?? 0;
-  return s;
-}
-/** 把最低值格升一级（步进最小，避免过冲） */
-function rushBumpUp(grid: Sym[], tier: TierDef): boolean {
-  let lo = -1;
-  let lv = Infinity;
-  for (let i = 0; i < grid.length; i++) {
-    const v = RUSH_VALUES[grid[i].icon] ?? 0;
-    if (v < 10 && v < lv) { lv = v; lo = i; }
-  }
-  if (lo < 0) return false;
-  const cur = RUSH_VALUES[grid[lo].icon] ?? 0;
-  let pick = -1;
-  let pv = Infinity;
-  for (let k = 0; k < tier.symbols.length; k++) {
-    const v = RUSH_VALUES[tier.symbols[k].icon] ?? 0;
-    if (v > cur && v < pv) { pv = v; pick = k; }
-  }
-  if (pick < 0) return false;
-  grid[lo] = tier.symbols[pick];
-  return true;
-}
-/** 把最高值格降一级 */
-function rushBumpDown(grid: Sym[], tier: TierDef): boolean {
-  let hi = -1;
-  let hv = -1;
-  for (let i = 0; i < grid.length; i++) {
-    const v = RUSH_VALUES[grid[i].icon] ?? 0;
-    if (v > 0 && v > hv) { hv = v; hi = i; }
-  }
-  if (hi < 0) return false;
-  const cur = RUSH_VALUES[grid[hi].icon] ?? 0;
-  let pick = -1;
-  let pv = -1;
-  for (let k = 0; k < tier.symbols.length; k++) {
-    const v = RUSH_VALUES[tier.symbols[k].icon] ?? 0;
-    if (v < cur && v > pv) { pv = v; pick = k; }
-  }
-  grid[hi] = pick < 0 ? tier.symbols[tier.symbols.length - 1] : tier.symbols[pick];
-  return true;
-}
-/** 反复升降直到总和落在 [lo, hi] */
-function rushAdjustTo(grid: Sym[], tier: TierDef, lo: number, hi: number): void {
-  let guard = 0;
-  let sum = rushSum(grid);
-  while (sum < lo && guard++ < 80 && rushBumpUp(grid, tier)) sum = rushSum(grid);
-  while (sum > hi && guard++ < 80 && rushBumpDown(grid, tier)) sum = rushSum(grid);
-}
-function genRush(tier: TierDef, wc: number): { grid: Sym[]; eval: BoardEval } {
-  const grid: Sym[] = [];
-  for (let i = 0; i < 9; i++) grid.push(rushPick(tier));
-  if (Math.random() < wc) {
-    // 中奖：极小概率冲刺到头奖(总和≥50)，否则稳进达标区间[30,34]
-    if (Math.random() < RUSH_JACKPOT_FRAC) rushAdjustTo(grid, tier, 50, 58);
-    else rushAdjustTo(grid, tier, RUSH_TARGET, 34);
-  } else {
-    rushAdjustTo(grid, tier, 0, RUSH_TARGET - 1); // 未中：压到 ≤29（常停 28-29 制造"差一点"）
-  }
-  return { grid, eval: evalRush(grid) };
-}
-
-// SIM-VERIFIED（每档 30 万次，含幸运值状态机）：
-//   铜(match3) blend ≈0.90 / 银(line) ≈0.82 / 金(rush) ≈0.88。均 ≤0.95。
-//   负局不变量：match3 无奖符达 3；line 无奖符占满整线；rush 总和 ≤29。
-/** 生成一张彩票：按档玩法 + 幸运值定输赢，并据此构造合法棋盘 */
-function genBoard(tier: TierDef, pity: number): { grid: Sym[]; eval: BoardEval } {
-  const wc = Math.min(tier.winChance + LUCK_BONUS_PER_PITY * pity, PER_DRAW_CAP);
-  if (tier.variant === 'line') return genLine(tier, wc);
-  if (tier.variant === 'rush') return genRush(tier, wc);
-  return genMatch3(tier, wc);
-}
+// 每点小幅抬升该档中奖概率。整体见 engine 的 SIM 注释。
 
 // ---------- 画布布局常量 ----------
 const CW = 340;
 const CH = 400;
-const GRID_CS = 88;
-const GRID_GAP = 10;
-const GRID_X = (CW - 3 * GRID_CS - 2 * GRID_GAP) / 2;
-const GRID_Y = 48;
 const REVEAL_THRESHOLD = 0.5; // 刮开超过 50% 自动揭晓
 
 // 覆盖率网格：解析法统计已刮面积，替代 getImageData 像素读回。
@@ -348,6 +29,375 @@ const COVER_CELL = 10; // 每格 10 背板像素
 const COVER_COLS = CW / COVER_CELL; // 34
 const COVER_ROWS = CH / COVER_CELL; // 40
 const COVER_TOTAL = COVER_COLS * COVER_ROWS;
+
+/** hex(#rrggbb) + alpha → rgba() 字符串（卡面叠加档位色用） */
+function hexA(hex: string, a: number): string {
+  const h = hex.replace('#', '');
+  return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${a})`;
+}
+
+/** hex 颜色按 amt 混入白(>0)/黑(<0)，返回 rgb()，用于马赛克瓷砖高光/暗边 */
+function shade(hex: string, amt: number): string {
+  const h = hex.replace('#', '');
+  let r = parseInt(h.slice(0, 2), 16);
+  let g = parseInt(h.slice(2, 4), 16);
+  let b = parseInt(h.slice(4, 6), 16);
+  if (amt >= 0) {
+    r += (255 - r) * amt;
+    g += (255 - g) * amt;
+    b += (255 - b) * amt;
+  } else {
+    r *= 1 + amt;
+    g *= 1 + amt;
+    b *= 1 + amt;
+  }
+  return `rgb(${r | 0},${g | 0},${b | 0})`;
+}
+
+/** 像素图：'X'=主色，'O'=暗色（高光/阴影/孔），' '=透明 */
+interface PixelIcon {
+  grid: string[];
+  color: string;
+  dark?: string;
+}
+
+/** 把像素图画到 (cx,cy) 为中心、边长约 size 的方框内，每格一个硬边小方块 */
+function drawPixels(
+  ctx: CanvasRenderingContext2D,
+  icon: PixelIcon,
+  cx: number,
+  cy: number,
+  size: number,
+): void {
+  const rows = icon.grid.length;
+  const cols = icon.grid[0].length;
+  const px = size / Math.max(rows, cols);
+  const w = cols * px;
+  const h = rows * px;
+  const x0 = cx - w / 2;
+  const y0 = cy - h / 2;
+  const step = Math.max(1, Math.ceil(px));
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const ch = icon.grid[r][c];
+      if (ch === ' ' || ch === '.') continue;
+      ctx.fillStyle = ch === 'O' ? icon.dark || '#000' : icon.color;
+      ctx.fillRect(Math.round(x0 + c * px), Math.round(y0 + r * px), step, step);
+    }
+  }
+}
+
+/** emoji → 像素图。未收录的符号回退为 emoji 字体。逐档逐步补全。 */
+const PIXEL_ICONS: Record<string, PixelIcon> = {
+  // 金币（铜钱：金圈 + 方孔）
+  '🪙': {
+    color: '#ffd45e', dark: '#9a6a14',
+    grid: [
+      '..XXXX..',
+      '.XXXXXX.',
+      'XX.OO.XX',
+      'X..OO..X',
+      'X..OO..X',
+      'XX.OO.XX',
+      '.XXXXXX.',
+      '..XXXX..',
+    ],
+  },
+  // 钻石（青，右下暗面）
+  '💎': {
+    color: '#7df9ff', dark: '#2a7fa0',
+    grid: [
+      '...XX...',
+      '..XXXX..',
+      '.XXXXXX.',
+      'XXXXXOOO',
+      '.XXXOOO.',
+      '..XOOO..',
+      '...OO...',
+      '........',
+    ],
+  },
+  // 星星（五角星近似）
+  '⭐': {
+    color: '#ffd45e', dark: '#c98a1f',
+    grid: [
+      '...XX...',
+      '...XX...',
+      '.XXXXXX.',
+      'XXXXXXXX',
+      '.XXXXXX.',
+      '..XXXX..',
+      '.XX..XX.',
+      'X......X',
+    ],
+  },
+  // 屎
+  '💩': {
+    color: '#a06a2e', dark: '#6a4418',
+    grid: [
+      '..X..X..',
+      '..X..X..',
+      '.XXXXXX.',
+      'XOOOOOOX',
+      'XOOXXOOX',
+      'XOOOOOOX',
+      '.XXXXXX.',
+      '..XXXX..',
+    ],
+  },
+  // 7（红字）
+  '7️⃣': {
+    color: '#e84753', dark: '#7a1f26',
+    grid: [
+      'XXXXXX..',
+      'X....X..',
+      '....XX..',
+      '...XX...',
+      '..XX....',
+      '..XX....',
+      '..XX....',
+      '........',
+    ],
+  },
+  // 火焰（橙红 + 黄内焰）
+  '🔥': {
+    color: '#ff6b35', dark: '#ffd45e',
+    grid: [
+      '...X....',
+      '..XOX...',
+      '..XOX...',
+      '.XOOOX..',
+      'XXOOOXX.',
+      '.XOOOX..',
+      '..XXX...',
+      '...X....',
+    ],
+  },
+  // 闪电
+  '⚡': {
+    color: '#ffe14d', dark: '#c9a824',
+    grid: [
+      '..XXXX..',
+      '..X.....',
+      '.XX.....',
+      'XXXXX...',
+      '.XXX....',
+      '...X....',
+      '...XX...',
+      '....X...',
+    ],
+  },
+  // 炸弹（深灰弹 + 引线）
+  '💣': {
+    color: '#3a3a4a', dark: '#b8861f',
+    grid: [
+      '......X.',
+      '.....XX.',
+      '....XX..',
+      '.XXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      '.XXXXXX.',
+    ],
+  },
+  // 加号（gold rush）
+  '➕': {
+    color: '#ffd45e',
+    grid: [
+      '...XX...',
+      '...XX...',
+      '...XX...',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      '...XX...',
+      '...XX...',
+      '........',
+    ],
+  },
+  // 三叶草
+  '🍀': {
+    color: '#4caf50', dark: '#2e6e30',
+    grid: [
+      '..XX.X..',
+      '.XXXXX..',
+      '.XXXXX..',
+      '..XXX.X.',
+      '...XX...',
+      '...XX...',
+      '..X..X..',
+      '........',
+    ],
+  },
+  // 绿心
+  '💚': {
+    color: '#4caf50', dark: '#2e6e30',
+    grid: [
+      '.XX.XX..',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      '.XXXXX..',
+      '..XXX...',
+      '...X....',
+      '........',
+    ],
+  },
+  // 菱形宝石
+  '💠': {
+    color: '#5ad6ff', dark: '#1a6a8a',
+    grid: [
+      '...XX...',
+      '..XXXX..',
+      '.XXXXXX.',
+      'XXXOOXXX',
+      '.XXOOO..',
+      '..XOO...',
+      '...OO...',
+      '........',
+    ],
+  },
+  // 闪星（带光芒）
+  '🌟': {
+    color: '#ffe14d', dark: '#c9a824',
+    grid: [
+      '...X....',
+      '...X....',
+      '.XXXXX..',
+      'XXXXXXX.',
+      '.XXXXX..',
+      '.X.X.X..',
+      'X..X..X.',
+      '........',
+    ],
+  },
+  // 仙人掌
+  '🌵': {
+    color: '#5fa85a', dark: '#3a6a35',
+    grid: [
+      '..XX..X.',
+      '..XX.XX.',
+      '..XXXXX.',
+      '.X.XX.X.',
+      '...XX...',
+      '...XX...',
+      '.XXXXXX.',
+      '...XX...',
+    ],
+  },
+  // 水晶球
+  '🔮': {
+    color: '#c061e0', dark: '#6a3a8a',
+    grid: [
+      '...XX...',
+      '..XXXX..',
+      '.XXXXXX.',
+      'XXXOOXXX',
+      'XXXOOXXX',
+      '.XXXXXX.',
+      '.XXXXXX.',
+      '.XXXXXX.',
+    ],
+  },
+  // 紫心
+  '💜': {
+    color: '#c061e0', dark: '#6a3a8a',
+    grid: [
+      '.XX.XX..',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      '.XXXXX..',
+      '..XXX...',
+      '...X....',
+      '........',
+    ],
+  },
+  // 外星人
+  '👾': {
+    color: '#8be060', dark: '#2a3a1a',
+    grid: [
+      '..XXXX..',
+      '.X.XX.X.',
+      'X.XXXX.X',
+      'XXXXXXXX',
+      'X.XXXX.X',
+      '.X.XX.X.',
+      '.X.XX.X.',
+      '..X..X..',
+    ],
+  },
+  // 病毒
+  '🦠': {
+    color: '#7ac050', dark: '#3a6a20',
+    grid: [
+      '.X....X.',
+      'XX.X..XX',
+      '.XXXXXX.',
+      '.XXXXX..',
+      '.XXXXXX.',
+      'XX.X..XX',
+      '.X....X.',
+      '........',
+    ],
+  },
+  // 红心
+  '❤️': {
+    color: '#e84753', dark: '#7a1f26',
+    grid: [
+      '.XX.XX..',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      '.XXXXX..',
+      '..XXX...',
+      '...X....',
+      '........',
+    ],
+  },
+  // 皇后（棋后）
+  '♛': {
+    color: '#e8e8f0', dark: '#6a6a8a',
+    grid: [
+      'X.X.X.X.',
+      'XXXXXXX.',
+      'XOXXXOX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+    ],
+  },
+  // 皇冠
+  '👑': {
+    color: '#ffd45e', dark: '#b8861f',
+    grid: [
+      'X.X.X.X.',
+      'XXXXXXX.',
+      'XOXXXOX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      'XXXXXXX.',
+    ],
+  },
+  // 血滴
+  '🩸': {
+    color: '#c01828', dark: '#6a0a14',
+    grid: [
+      '...X....',
+      '..XXX...',
+      '.XXXXX..',
+      'XXXXXXX.',
+      'XXXXXXX.',
+      '.XXXXX..',
+      '..XXX...',
+      '...X....',
+    ],
+  },
+};
 
 /**
  * 刮刮乐 UI：自建模态 DOM 并挂入 #gameRoot（随画面旋转一致）。
@@ -473,7 +523,7 @@ export class Lottery {
     this.luckText = this.modal.querySelector('#luckText') as HTMLSpanElement;
     this.statsEl = this.modal.querySelector('#lottoStats') as HTMLDivElement;
 
-    // 档位按钮
+    // 档位按钮（6 档：横向滚动条）
     for (const t of TIERS) {
       const b = document.createElement('button') as HTMLButtonElement;
       b.className = 'lotto-tier';
@@ -573,7 +623,7 @@ export class Lottery {
     for (const id in this.tierBtns) {
       this.tierBtns[id].classList.toggle('active', id === t.id);
     }
-    if (changed) audio.sfx('tierSelect', { semi: tierSemi(t) });
+    if (changed) audio.sfx('tierSelect', { semi: t.semi });
     this.syncLuck();
     this.refreshBuy();
     if (redraw && this.phase !== 'scratching') this.drawIdle();
@@ -589,7 +639,7 @@ export class Lottery {
       return;
     }
     if (!this.state.spend(tier.cost)) return;
-    audio.sfx('buy', { semi: tierSemi(tier) });
+    audio.sfx('buy', { semi: tier.semi });
     this.onCoins();
     this.syncCoins();
 
@@ -654,11 +704,8 @@ export class Lottery {
     const isJackpot = ev.prize >= topPrize(tier);
     // 音效：头奖 / 各玩法中奖 sting / 未中（+幸运值上升提示）
     if (ev.prize > 0) {
-      if (isJackpot) audio.sfx('jackpot', { semi: tierSemi(tier) });
-      else {
-        const name = tier.variant === 'line' ? 'winLine' : tier.variant === 'rush' ? 'winSum' : 'win';
-        audio.sfx(name, { semi: tierSemi(tier) });
-      }
+      if (isJackpot) audio.sfx('jackpot', { semi: tier.semi });
+      else audio.sfx(VARIANTS[tier.variant].winSfx, { semi: tier.semi });
     } else {
       audio.sfx('lottoMiss');
       if (this.pityFor(tier) > pityBefore) audio.sfx('luck');
@@ -937,20 +984,9 @@ export class Lottery {
     ctx.closePath();
   }
 
-  /** 规则底注（按玩法变体） */
+  /** 规则底注（按选中档位的玩法） */
   private ruleCaption(): string {
-    const v = this.selected.variant;
-    if (v === 'line') return '一条横竖斜连线即中奖(1x)';
-    if (v === 'rush') return '9格金币总和≥30即中奖 越高倍率越大';
-    return '凑齐3连中奖 · 4连x2 · 5连x3';
-  }
-
-  /** 该档奖金表底注（空闲卡用） */
-  private legendCaption(tier: TierDef): string {
-    if (tier.variant === 'rush') return `总和≥30:+4000  ≥50:+80000(头奖)`;
-    if (tier.variant === 'line')
-      return tier.symbols.filter((s) => s.prize > 0).map((s) => `${s.icon}×${s.prize}`).join('  ');
-    return tier.symbols.filter((s) => s.prize > 0).map((s) => `${s.icon}×${s.prize}`).join('  ');
+    return VARIANTS[this.selected.variant].rule(this.selected);
   }
 
   /** 档位中奖率定性标签（基于 winChance）：高频档中奖多、奖金小；低频档反之 */
@@ -960,57 +996,99 @@ export class Lottery {
     return '中奖低';
   }
 
-  /** 卡面：外框档位色 + 暗面板 + 标题 + 3×3 格子 + 中奖高亮 + 底注 */
+  /** 卡面：外框档位色 + 暗面板 + 标题 + cols×rows 格子 + 中奖高亮 + 底注。
+   *  网格大小按 tier.cols/rows 动态计算并居中，3×3/4×4 等通用。 */
   private drawCard(tier: TierDef, grid: Sym[], highlight: number[], caption: string): void {
     const ctx = this.rctx;
     ctx.clearRect(0, 0, CW, CH);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    this.rr(0, 0, CW, CH, 14);
+    // 外框：档位色 + 外发光
+    ctx.save();
+    ctx.shadowColor = hexA(tier.accent, 0.7);
+    ctx.shadowBlur = 18;
+    this.rr(0, 0, CW, CH, 16);
     ctx.fillStyle = tier.accent;
     ctx.fill();
-    this.rr(7, 7, CW - 14, CH - 14, 10);
-    const g = ctx.createLinearGradient(0, 0, 0, CH);
-    g.addColorStop(0, '#1a1438');
-    g.addColorStop(1, '#100c26');
-    ctx.fillStyle = g;
+    ctx.restore();
+
+    // 内面板：深色背板（像素瓷砖的底）
+    this.rr(6, 6, CW - 12, CH - 12, 12);
+    const grad = ctx.createLinearGradient(0, 0, 0, CH);
+    grad.addColorStop(0, '#1d1640');
+    grad.addColorStop(1, '#0d0a1f');
+    ctx.fillStyle = grad;
     ctx.fill();
 
-    ctx.fillStyle = tier.accent;
-    ctx.font = "11px 'Press Start 2P', monospace";
-    ctx.fillText(`${tier.icon} ${tier.name}`, CW / 2, 24);
+    // 标题底条
+    this.rr(12, 12, CW - 24, 30, 8);
+    const tg = ctx.createLinearGradient(0, 12, 0, 42);
+    tg.addColorStop(0, hexA(tier.accent, 0.4));
+    tg.addColorStop(1, hexA(tier.accent, 0.12));
+    ctx.fillStyle = tg;
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = "12px 'Press Start 2P', monospace";
+    ctx.fillText(`${tier.icon} ${tier.name}`, CW / 2, 28);
 
-    for (let i = 0; i < 9; i++) {
-      const r = Math.floor(i / 3);
-      const c = i % 3;
-      const x = GRID_X + c * (GRID_CS + GRID_GAP);
-      const y = GRID_Y + r * (GRID_CS + GRID_GAP);
+    // 网格几何：按 cols×rows 动态计算，居中
+    const cols = tier.cols;
+    const rows = tier.rows;
+    const gap = cols >= 4 || rows >= 4 ? 7 : 9; // 宽缝隙，凸显像素分块
+    const top = 58;
+    const bottom = CH - 26;
+    const availW = CW - 24;
+    const availH = bottom - top;
+    const cell = Math.floor(
+      Math.min((availW - (cols - 1) * gap) / cols, (availH - (rows - 1) * gap) / rows),
+    );
+    const gridW = cols * cell + (cols - 1) * gap;
+    const gridH = rows * cell + (rows - 1) * gap;
+    const ox = (CW - gridW) / 2;
+    const oy = top + (availH - gridH) / 2;
+    const fontPx = Math.max(22, Math.min(52, Math.floor(cell * 0.52)));
+    const cellRect = (i: number): { x: number; y: number } => {
+      const r = Math.floor(i / cols);
+      const c = i % cols;
+      return { x: ox + c * (cell + gap), y: oy + r * (cell + gap) };
+    };
 
-      this.rr(x, y, GRID_CS, GRID_CS, 10);
-      ctx.fillStyle = '#0b0918';
-      ctx.fill();
-      this.rr(x + 2, y + 2, GRID_CS - 4, GRID_CS - 4, 8);
-      ctx.fillStyle = '#160f30';
-      ctx.fill();
+    // 像素勾缝底：网格区填深色，瓷砖画在其上，缝隙露出成“缝”（直角硬边）
+    ctx.fillStyle = '#0a0716';
+    ctx.fillRect(ox - gap / 2 - 2, oy - gap / 2 - 2, gridW + gap + 4, gridH + gap + 4);
 
-      ctx.font = '46px serif';
-      ctx.fillStyle = '#fff';
-      ctx.fillText(grid[i].icon, x + GRID_CS / 2, y + GRID_CS / 2 + 3);
+    for (let i = 0; i < grid.length; i++) {
+      const { x, y } = cellRect(i);
+      const s = grid[i];
+
+      // 统一暗格子背景（不再按符号分色瓷砖）：深底 + 细亮顶/左边，干净衬底
+      ctx.fillStyle = '#15102e';
+      ctx.fillRect(x, y, cell, cell);
+      ctx.fillStyle = '#241d4a';
+      ctx.fillRect(x, y, cell, 2);
+      ctx.fillRect(x, y, 2, cell);
+
+      // 图案：优先手绘像素图，未收录则回退 emoji
+      const iconDef = PIXEL_ICONS[s.icon];
+      if (iconDef) {
+        drawPixels(ctx, iconDef, x + cell / 2, y + cell / 2 + 1, cell * 0.74);
+      } else {
+        ctx.font = `${fontPx}px serif`;
+        ctx.fillStyle = '#fff';
+        ctx.fillText(s.icon, x + cell / 2, y + cell / 2 + Math.floor(fontPx * 0.06));
+      }
     }
 
+    // 中奖高亮：金色发光硬边框
     for (const i of highlight) {
-      const r = Math.floor(i / 3);
-      const c = i % 3;
-      const x = GRID_X + c * (GRID_CS + GRID_GAP);
-      const y = GRID_Y + r * (GRID_CS + GRID_GAP);
+      const { x, y } = cellRect(i);
       ctx.save();
-      ctx.shadowColor = tier.accent;
+      ctx.shadowColor = '#fff3b0';
       ctx.shadowBlur = 16;
-      ctx.strokeStyle = tier.accent;
+      ctx.strokeStyle = '#fff3b0';
       ctx.lineWidth = 3;
-      this.rr(x, y, GRID_CS, GRID_CS, 10);
-      ctx.stroke();
+      ctx.strokeRect(x - 1.5, y - 1.5, cell + 3, cell + 3);
       ctx.restore();
     }
 
@@ -1070,24 +1148,11 @@ export class Lottery {
     ctx.stroke();
   }
 
-  /** 空闲态：展示该档玩法预览，并在底注列出奖金/规则。 */
+  /** 空闲态：展示该档玩法预览（每种玩法自带 idlePreview）+ 奖金表底注。 */
   private drawIdle(): void {
     const t = this.selected;
-    let grid: Sym[];
-    if (t.variant === 'rush') {
-      // rush 预览：把 4 个金币符各放一个 + ➕，其余 💩，示意「求和」
-      const coins = t.symbols.filter((s) => (RUSH_VALUES[s.icon] ?? s.prize) > 0);
-      const miss = t.symbols[t.symbols.length - 1];
-      grid = [...coins];
-      while (grid.length < 9) grid.push(miss);
-    } else {
-      const legend = t.symbols.filter((s) => s.prize > 0);
-      const miss = t.symbols[t.symbols.length - 1];
-      grid = [...legend];
-      while (grid.length < 9) grid.push(miss);
-    }
-    shuffle(grid);
-    this.drawCard(t, grid, [], this.legendCaption(t));
+    const grid = VARIANTS[t.variant].idlePreview(t);
+    this.drawCard(t, grid, [], VARIANTS[t.variant].legend(t));
   }
 
   // ---------- UI 同步 ----------
