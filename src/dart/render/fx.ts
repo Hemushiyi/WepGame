@@ -33,50 +33,45 @@ function dartSeed(dart: Dart): number {
 // ============================================================
 // drawAim：横向准星
 // ============================================================
-export function drawAim(env: SceneEnv, aimY: number, locked: boolean): void {
-  const { ctx, time, stats } = env;
-  const cx = BOARD_CENTER.x;
-  const halfW = Math.max(8, stats.r4 + 16);
-  const left = Math.round(cx - halfW);
-  const right = Math.round(cx + halfW);
+export function drawAim(env: SceneEnv, aimX: number, aimY: number, locked: boolean): void {
+  const { ctx, time } = env;
+  const ax = Math.round(aimX);
   const ay = Math.round(aimY);
 
-  // 水平准星线颜色：锁定时亮黄，否则青色
-  const lineColor = locked ? PAL['y'] : PAL['e'];
-
-  // 1px 水平线
-  pixelLine(ctx, left, ay, right, ay, lineColor);
-
-  // 两端的小三角箭头（指向盘心）
-  drawTriTip(ctx, left, ay, +1, lineColor);
-  drawTriTip(ctx, right, ay, -1, lineColor);
-
-  // 中心呼吸准星
-  // 呼吸周期 ~1.1s；锁定后切换高频脉冲并加粗
+  // 呼吸周期
   const t = time / 1000;
   let baseR: number;
-  let ringColor: string;
+  let crossColor: string; // 十字刻度 + 外环颜色
   if (locked) {
-    const pulse = 0.5 + 0.5 * Math.sin(t * 14); // 高频
-    baseR = 4 + Math.round(pulse * 2); // 4..6
-    ringColor = PAL['y'];
+    const pulse = 0.5 + 0.5 * Math.sin(t * 14);
+    baseR = 11 + Math.round(pulse * 6);
+    crossColor = PAL['y']; // 金色
   } else {
-    const breathe = 0.5 + 0.5 * Math.sin(t * 2.8); // 慢呼吸
-    baseR = 3 + Math.round(breathe * 2); // 3..5
-    ringColor = PAL['e'];
+    const breathe = 0.5 + 0.5 * Math.sin(t * 2.8);
+    baseR = 9 + Math.round(breathe * 5);
+    crossColor = '#ff6b35'; // 亮橙
   }
 
-  // 外环
-  pixelCircleRing(ctx, cx, ay, baseR, ringColor);
-  // 内核高光（锁定时更亮）
-  pixelCircle(ctx, cx, ay, locked ? 2 : 1, locked ? PAL['W'] : PAL['w']);
+  // 外呼吸环
+  pixelCircleRing(ctx, ax, ay, baseR, crossColor);
 
-  // 中心十字微刻度（增强瞄准感）
-  const tick = locked ? PAL['y'] : PAL['e'];
-  pixelRect(ctx, cx - 1, ay - (baseR + 2), 3, 1, tick);
-  pixelRect(ctx, cx - 1, ay + (baseR + 2), 3, 1, tick);
-  pixelRect(ctx, cx - (baseR + 2), ay - 1, 1, 3, tick);
-  pixelRect(ctx, cx + (baseR + 2), ay - 1, 1, 3, tick);
+  // 四向粗短刻度臂（像素狙击镜风格），外环外侧各伸一截
+  const armLen = 5;
+  const armW = 3;
+  const out = baseR + 1; // 从环外侧起步
+  const half = Math.floor(armW / 2);
+  // 上
+  pixelRect(ctx, ax - half, ay - out - armLen, armW, armLen, crossColor);
+  // 下
+  pixelRect(ctx, ax - half, ay + out + 1, armW, armLen, crossColor);
+  // 左
+  pixelRect(ctx, ax - out - armLen, ay - half, armLen, armW, crossColor);
+  // 右
+  pixelRect(ctx, ax + out + 1, ay - half, armLen, armW, crossColor);
+
+  // 中央实心红方块（醒目红点）
+  const core = locked ? 4 : 3;
+  pixelRect(ctx, ax - core, ay - core, core * 2 + 1, core * 2 + 1, '#ff2244');
 }
 
 // 画一个 5px 高的小三角箭头（指向 dir：+1 向右、-1 向左）
@@ -187,8 +182,8 @@ export function drawDart(env: SceneEnv, dart: Dart): void {
     const seed = dartSeed(dart);
     const segCount = 4;
     for (let i = 1; i <= segCount; i++) {
-      // 等长间距小段
-      const dist = i * 4;
+      // 等长间距小段（2×放大后间距同步翻倍）
+      const dist = i * 4 * 3;
       const sx = px - ux * dist;
       const sy = py - uy * dist;
       // 透明度随段递减（i 越远越淡）
@@ -206,10 +201,11 @@ export function drawDart(env: SceneEnv, dart: Dart): void {
     ctx.globalAlpha = 1;
   }
 
-  // ---- 镖体：在旋转后的局部坐标里画 ----
+  // ---- 镖体：在旋转后的局部坐标里画（2× 放大）----
   ctx.save();
   ctx.translate(px, py);
   ctx.rotate(ang);
+  ctx.scale(3, 3);
   // 关闭抗锯齿（像素风）
   ctx.imageSmoothingEnabled = false;
 

@@ -1,5 +1,6 @@
-import type { DerivedStats, SkillEffect } from './types';
+import type { DerivedStats, LottoStats, SkillEffect, LevelId } from './types';
 import { ALL_NODES, NODE_BY_ID } from '../dart/skills';
+import { ALL_LOTTO_NODES, LOTTO_NODE_BY_ID } from '../lottery/skills';
 
 // ===== 游戏存档与派生属性 =====
 
@@ -55,13 +56,26 @@ const BASE: DerivedStats = {
   windResist: 0.1,
 };
 
+/** 彩票关卡基础属性（未被任何彩票技能加成前） */
+const BASE_LOTTO: LottoStats = {
+  costDiscount: 0,
+  winBonus: 0,
+  pityBonus: 0,
+  pityCapBonus: 0,
+  prizeMult: 0,
+  jackpotMult: 0,
+  freeTicket: 0,
+};
+
 interface SaveData {
   v: number;
   coins: number;
   score: number;
   totalEarned: number;
   maxCombo: number;
-  unlocked: string[];
+  unlocked?: string[]; // v2 老存档：飞镖技能（迁移后并入 unlockedDart）
+  unlockedDart?: string[]; // v3 起按关卡分离
+  unlockedLotto?: string[]; // v3 起按关卡分离
   lotto?: LottoSave; // v2 起新增
 }
 
@@ -70,10 +84,14 @@ export class GameState {
   score = 0;
   totalEarned = 0;
   maxCombo = 0;
-  unlocked = new Set<string>(['core']);
+  /** 飞镖关卡已解锁技能（默认拥有 core） */
+  unlockedDart = new Set<string>(['core']);
+  /** 彩票关卡已解锁技能（默认拥有 lcore） */
+  unlockedLotto = new Set<string>(['lcore']);
   /** 刮刮乐统计（持久化） */
   lotto: LottoSave = { ...DEFAULT_LOTTO };
   private cachedStats: DerivedStats | null = null;
+  private cachedLottoStats: LottoStats | null = null;
 
   constructor() {
     this.load();
@@ -85,14 +103,17 @@ export class GameState {
       if (!raw) raw = localStorage.getItem(LEGACY_KEY); // v1 老存档迁移
       if (!raw) return;
       const data = JSON.parse(raw) as SaveData;
-      if (data && (data.v === 1 || data.v === 2)) {
+      if (data && (data.v === 1 || data.v === 2 || data.v === 3)) {
         this.coins = Math.max(0, data.coins | 0);
         this.score = Math.max(0, data.score | 0);
         this.totalEarned = Math.max(0, data.totalEarned | 0);
         this.maxCombo = Math.max(0, data.maxCombo | 0);
-        this.unlocked = new Set(['core', ...(data.unlocked || [])]);
-        // 仅 v2 携带彩票统计；v1 老存档保持默认零值（金币/技能照常继承）
-        if (data.v === 2 && data.lotto) {
+        // 技能集合按关卡分离（v3）。v1/v2 老存档只有一个 unlocked → 全归入飞镖集合。
+        const legacyDart = data.v < 3 ? data.unlocked : data.unlockedDart;
+        this.unlockedDart = new Set(['core', ...(legacyDart || [])]);
+        this.unlockedLotto = new Set(['lcore', ...(data.v >= 3 ? data.unlockedLotto || [] : [])]);
+        // 仅 v2+ 携带彩票统计；v1 老存档保持默认零值（金币/技能照常继承）
+        if (data.v >= 2 && data.lotto) {
           const incoming = data.lotto as Partial<LottoSave>;
           this.lotto = {
             ...DEFAULT_LOTTO,
@@ -104,13 +125,15 @@ export class GameState {
                 : {},
           };
         }
-        // 从老 key 迁移成功后，立即以新 key 写回并清掉老 key，下次直读 v2
-        if (data.v === 1) {
+        // 老版本存档迁移成功后，立即以最新版本写回，清掉老 key，下次直读
+        if (data.v < 3) {
           this.save();
-          try {
-            localStorage.removeItem(LEGACY_KEY);
-          } catch {
-            /* ignore */
+          if (data.v === 1) {
+            try {
+              localStorage.removeItem(LEGACY_KEY);
+            } catch {
+              /* ignore */
+            }
           }
         }
       }
@@ -121,12 +144,13 @@ export class GameState {
 
   save(): void {
     const data: SaveData = {
-      v: 2,
+      v: 3,
       coins: this.coins,
       score: this.score,
       totalEarned: this.totalEarned,
       maxCombo: this.maxCombo,
-      unlocked: [...this.unlocked],
+      unlockedDart: [...this.unlockedDart],
+      unlockedLotto: [...this.unlockedLotto],
       lotto: this.lotto,
     };
     try {
@@ -136,12 +160,12 @@ export class GameState {
     }
   }
 
-  /** 计算当前所有派生属性（带缓存） */
+  /** 计算飞镖关卡派生属性（带缓存） */
   stats(): DerivedStats {
     if (this.cachedStats) return this.cachedStats;
     const s: DerivedStats = { ...BASE };
     for (const node of ALL_NODES) {
-      if (!this.unlocked.has(node.id)) continue;
+      if (!this.unlockedDart.has(node.id)) continue;
       for (const e of node.effects) applyEffect(s, e);
     }
     // 钳制到合理范围
@@ -159,36 +183,67 @@ export class GameState {
     return s;
   }
 
+  /** 计算彩票关卡派生属性（带缓存） */
+  lottoStats(): LottoStats {
+    if (this.cachedLottoStats) return this.cachedLottoStats;
+    const s: LottoStats = { ...BASE_LOTTO };
+    for (const node of ALL_LOTTO_NODES) {
+      if (!this.unlockedLotto.has(node.id)) continue;
+      for (const e of node.effects) applyLottoEffect(s, e);
+    }
+    // 钳制：保持彩票为负期望（折扣/中奖率/奖金倍率都有上限）
+    s.costDiscount = Math.min(0.5, Math.max(0, s.costDiscount));
+    s.winBonus = Math.min(0.15, Math.max(0, s.winBonus));
+    s.pityBonus = Math.max(0, s.pityBonus);
+    s.pityCapBonus = Math.max(0, s.pityCapBonus);
+    s.prizeMult = Math.min(0.5, Math.max(0, s.prizeMult));
+    s.jackpotMult = Math.min(1, Math.max(0, s.jackpotMult));
+    s.freeTicket = Math.min(0.3, Math.max(0, s.freeTicket));
+    this.cachedLottoStats = s;
+    return s;
+  }
+
+  /** 关卡 → 该关已解锁技能集合 */
+  private ownedSet(level: LevelId): Set<string> {
+    return level === 'lotto' ? this.unlockedLotto : this.unlockedDart;
+  }
+  /** 关卡 → 该关节点表 */
+  private nodeById(level: LevelId): Record<string, { requires: string[]; cost: number }> {
+    return level === 'lotto' ? LOTTO_NODE_BY_ID : NODE_BY_ID;
+  }
+
   /** 前置满足 & 未拥有 & 金币足够 */
-  canBuy(id: string): boolean {
-    const node = NODE_BY_ID[id];
+  canBuy(level: LevelId, id: string): boolean {
+    const node = this.nodeById(level)[id];
     if (!node) return false;
-    if (this.unlocked.has(id)) return false;
+    const set = this.ownedSet(level);
+    if (set.has(id)) return false;
     if (this.coins < node.cost) return false;
-    return node.requires.every((r) => this.unlocked.has(r));
+    return node.requires.every((r) => set.has(r));
   }
 
   /** 购买节点，成功返回 true */
-  buy(id: string): boolean {
-    if (!this.canBuy(id)) return false;
-    const node = NODE_BY_ID[id];
+  buy(level: LevelId, id: string): boolean {
+    if (!this.canBuy(level, id)) return false;
+    const node = this.nodeById(level)[id];
     this.coins -= node.cost;
-    this.unlocked.add(id);
-    this.cachedStats = null;
+    this.ownedSet(level).add(id);
+    if (level === 'lotto') this.cachedLottoStats = null;
+    else this.cachedStats = null;
     this.save();
     return true;
   }
 
   /** 节点是否已解锁 */
-  owned(id: string): boolean {
-    return this.unlocked.has(id);
+  owned(level: LevelId, id: string): boolean {
+    return this.ownedSet(level).has(id);
   }
 
   /** 前置是否全部满足（用于 UI 显示可点状态） */
-  prereqMet(id: string): boolean {
-    const node = NODE_BY_ID[id];
+  prereqMet(level: LevelId, id: string): boolean {
+    const node = this.nodeById(level)[id];
     if (!node) return false;
-    return node.requires.every((r) => this.unlocked.has(r));
+    return node.requires.every((r) => this.ownedSet(level).has(r));
   }
 
   /** 加金币并累计 */
@@ -205,6 +260,13 @@ export class GameState {
     this.coins -= amount;
     this.save();
     return true;
+  }
+
+  /** 退还金币（如彩票「免费票」技能），不计入 totalEarned，直接存档 */
+  refund(amount: number): void {
+    if (amount <= 0) return;
+    this.coins += amount;
+    this.save();
   }
 
   /** 记录分数 */
@@ -243,9 +305,11 @@ export class GameState {
     this.score = 0;
     this.totalEarned = 0;
     this.maxCombo = 0;
-    this.unlocked = new Set(['core']);
+    this.unlockedDart = new Set(['core']);
+    this.unlockedLotto = new Set(['lcore']);
     this.lotto = { ...DEFAULT_LOTTO };
     this.cachedStats = null;
+    this.cachedLottoStats = null;
     try {
       localStorage.removeItem(SAVE_KEY);
       localStorage.removeItem(LEGACY_KEY); // 连同可能残留的老 key 一起清掉，避免复活
@@ -271,5 +335,19 @@ function applyEffect(s: DerivedStats, e: SkillEffect): void {
     case 'comboCap': s.comboCap += e.value; break;
     case 'comboShield': s.comboShield += e.value; break;
     case 'windResist': s.windResist += e.value; break;
+  }
+}
+
+/** 彩票技能效果累加到 LottoStats（飞镖 kinds 不会出现在彩票节点里，忽略） */
+function applyLottoEffect(s: LottoStats, e: SkillEffect): void {
+  switch (e.kind) {
+    case 'lottoCost': s.costDiscount += e.value; break;
+    case 'lottoWin': s.winBonus += e.value; break;
+    case 'lottoPityBonus': s.pityBonus += e.value; break;
+    case 'lottoPityCap': s.pityCapBonus += e.value; break;
+    case 'lottoPrizeMult': s.prizeMult += e.value; break;
+    case 'lottoJackpotMult': s.jackpotMult += e.value; break;
+    case 'lottoFreeTicket': s.freeTicket += e.value; break;
+    // 飞镖专属 kinds 不会出现在彩票节点；default 无操作
   }
 }

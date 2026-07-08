@@ -1,5 +1,6 @@
 import { GameState, LOTTO_UNLOCK_TOTAL } from '../shared/state';
 import { audio } from '../shared/audio';
+import type { LottoStats } from '../shared/types';
 import {
   TIERS,
   VARIANTS,
@@ -8,6 +9,7 @@ import {
   evalBoard,
   type TierDef,
   type Sym,
+  type VariantId,
 } from './engine';
 
 // ===== 刮刮乐（彩票）UI =====
@@ -29,6 +31,16 @@ const COVER_CELL = 10; // 每格 10 背板像素
 const COVER_COLS = CW / COVER_CELL; // 34
 const COVER_ROWS = CH / COVER_CELL; // 40
 const COVER_TOTAL = COVER_COLS * COVER_ROWS;
+
+// ---------- 玩区几何（格子摆放的可用矩形 + 中心）----------
+// 卡面内：标题条之下、底注之上的区域。各玩法 layout 把格子下标映射到这里。
+const PLAY_TOP = 58;
+const PLAY_BOTTOM = CH - 26; // 374
+const PLAY_CX = CW / 2; // 170
+const PLAY_CY = (PLAY_TOP + PLAY_BOTTOM) / 2; // 216
+
+/** 一个格子在背板坐标系（CW×CH）中的矩形。layout 注册表产出此数组供 drawCard 消费 */
+type CellRect = { x: number; y: number; w: number; h: number };
 
 /** hex(#rrggbb) + alpha → rgba() 字符串（卡面叠加档位色用） */
 function hexA(hex: string, a: number): string {
@@ -82,7 +94,11 @@ function drawPixels(
       const ch = icon.grid[r][c];
       if (ch === ' ' || ch === '.') continue;
       ctx.fillStyle = ch === 'O' ? icon.dark || '#000' : icon.color;
-      ctx.fillRect(Math.round(x0 + c * px), Math.round(y0 + r * px), step, step);
+      const gx = Math.round(x0 + c * px);
+      const gy = Math.round(y0 + r * px);
+      // 像素块之间留 1px 暗底间隙（格线），让密排的 16×16 图案块块分明、辨识清晰
+      const gap = step > 1 ? 1 : 0;
+      ctx.fillRect(gx + gap, gy + gap, step - gap, step - gap);
     }
   }
 }
@@ -100,7 +116,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'X..OO..X',
       'XX.OO.XX',
       '.XXXXXX.',
-      '..XXXX..',
+      '..XXXX..'
     ],
   },
   // 钻石（青，右下暗面）
@@ -114,7 +130,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXXOOO.',
       '..XOOO..',
       '...OO...',
-      '........',
+      '........'
     ],
   },
   // 星星（五角星近似）
@@ -128,7 +144,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXXXXX.',
       '..XXXX..',
       '.XX..XX.',
-      'X......X',
+      'X......X'
     ],
   },
   // 屎
@@ -142,7 +158,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'XOOXXOOX',
       'XOOOOOOX',
       '.XXXXXX.',
-      '..XXXX..',
+      '..XXXX..'
     ],
   },
   // 7（红字）
@@ -156,7 +172,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '..XX....',
       '..XX....',
       '..XX....',
-      '........',
+      '........'
     ],
   },
   // 火焰（橙红 + 黄内焰）
@@ -170,7 +186,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'XXOOOXX.',
       '.XOOOX..',
       '..XXX...',
-      '...X....',
+      '...X....'
     ],
   },
   // 闪电
@@ -184,7 +200,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXX....',
       '...X....',
       '...XX...',
-      '....X...',
+      '....X...'
     ],
   },
   // 炸弹（深灰弹 + 引线）
@@ -198,7 +214,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'XXXXXXX.',
       'XXXXXXX.',
       'XXXXXXX.',
-      '.XXXXXX.',
+      '.XXXXXX.'
     ],
   },
   // 加号（gold rush）
@@ -212,7 +228,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'XXXXXXX.',
       '...XX...',
       '...XX...',
-      '........',
+      '........'
     ],
   },
   // 三叶草
@@ -226,7 +242,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '...XX...',
       '...XX...',
       '..X..X..',
-      '........',
+      '........'
     ],
   },
   // 绿心
@@ -240,7 +256,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXXXX..',
       '..XXX...',
       '...X....',
-      '........',
+      '........'
     ],
   },
   // 菱形宝石
@@ -254,7 +270,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXOOO..',
       '..XOO...',
       '...OO...',
-      '........',
+      '........'
     ],
   },
   // 闪星（带光芒）
@@ -268,7 +284,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXXXX..',
       '.X.X.X..',
       'X..X..X.',
-      '........',
+      '........'
     ],
   },
   // 仙人掌
@@ -282,7 +298,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '...XX...',
       '...XX...',
       '.XXXXXX.',
-      '...XX...',
+      '...XX...'
     ],
   },
   // 水晶球
@@ -296,7 +312,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'XXXOOXXX',
       '.XXXXXX.',
       '.XXXXXX.',
-      '.XXXXXX.',
+      '.XXXXXX.'
     ],
   },
   // 紫心
@@ -310,7 +326,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXXXX..',
       '..XXX...',
       '...X....',
-      '........',
+      '........'
     ],
   },
   // 外星人
@@ -324,7 +340,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'X.XXXX.X',
       '.X.XX.X.',
       '.X.XX.X.',
-      '..X..X..',
+      '..X..X..'
     ],
   },
   // 病毒
@@ -338,7 +354,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXXXXX.',
       'XX.X..XX',
       '.X....X.',
-      '........',
+      '........'
     ],
   },
   // 红心
@@ -352,7 +368,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       '.XXXXX..',
       '..XXX...',
       '...X....',
-      '........',
+      '........'
     ],
   },
   // 皇后（棋后）
@@ -366,7 +382,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'XXXXXXX.',
       'XXXXXXX.',
       'XXXXXXX.',
-      'XXXXXXX.',
+      'XXXXXXX.'
     ],
   },
   // 皇冠
@@ -380,7 +396,7 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'XXXXXXX.',
       'XXXXXXX.',
       'XXXXXXX.',
-      'XXXXXXX.',
+      'XXXXXXX.'
     ],
   },
   // 血滴
@@ -394,9 +410,129 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
       'XXXXXXX.',
       '.XXXXX..',
       '..XXX...',
-      '...X....',
+      '...X....'
     ],
   },
+};
+
+// ============ 每档差异化排列（layout 注册表）============
+// engine 的玩法逻辑（gen/eval/idle）只认 flat index，与屏幕坐标正交；
+// 这里把每个 index 映射成背板矩形，让 6 档排列样式截然不同（不再都是田字格）。
+// 禁用 Math.random：drawCard 在 idle/购买/结算都会重绘，随机会让格子跳位。
+
+/** 由中心 + 尺寸造居中方矩形 */
+function rectCenter(cx: number, cy: number, s: number): CellRect {
+  return { x: cx - s / 2, y: cy - s / 2, w: s, h: s };
+}
+
+/** 铜票 match3 —— 老虎机卷轴：3 条竖卷轴，竖格 + 宽卷轴缝（卷轴缝>行缝 → 读作卷轴） */
+function layoutReels(): CellRect[] {
+  const reelW = 90, reelGap = 23, rowGap = 12, cellH = 95;
+  const reelPitch = reelW + reelGap;
+  const rowPitch = cellH + rowGap;
+  const ox = (CW - (3 * reelW + 2 * reelGap)) / 2;
+  const oy = PLAY_TOP + ((PLAY_BOTTOM - PLAY_TOP) - (3 * cellH + 2 * rowGap)) / 2;
+  const rects: CellRect[] = [];
+  for (let i = 0; i < 9; i++) {
+    const reel = i % 3, row = Math.floor(i / 3);
+    rects.push({ x: ox + reel * reelPitch, y: oy + row * rowPitch, w: reelW, h: cellH });
+  }
+  return rects;
+}
+
+/** 银票 line —— 菱形：3×3 网格转 45°。8 条连线（3 行/3 列/2 对角）仍为屏幕直线
+ *  （主对角 0,4,8 → 竖线，副对角 2,4,6 → 横线），idle 预览即一条竖线。 */
+function layoutDiamond(): CellRect[] {
+  const step = 57, s = 78;
+  const rects: CellRect[] = [];
+  for (let i = 0; i < 9; i++) {
+    const r = Math.floor(i / 3), c = i % 3;
+    const dx = c - r, dy = c + r; // dx∈[-2,2], dy∈[0,4]
+    rects.push(rectCenter(PLAY_CX + dx * step, PLAY_CY + (dy - 2) * step, s));
+  }
+  return rects;
+}
+
+/** 金票 rush —— 散落金币堆：3×3 基底 + 固定抖动表（确定性，无随机） */
+const RUSH_JITTER: ReadonlyArray<[number, number, number]> = [
+  [-6, -4, -4], [5, 3, 0], [-3, 6, 4],
+  [7, -5, 0], [-4, 2, -4], [4, 5, 4],
+  [-5, -3, 4], [6, 4, 0], [3, -6, -4],
+];
+function layoutPile(): CellRect[] {
+  const baseCx = [70, 170, 270];
+  const baseCy = [116, 216, 316];
+  const baseSize = 76;
+  const rects: CellRect[] = [];
+  for (let i = 0; i < 9; i++) {
+    const r = Math.floor(i / 3), c = i % 3;
+    const [jx, jy, js] = RUSH_JITTER[i];
+    rects.push(rectCenter(baseCx[c] + jx, baseCy[r] + jy, baseSize + js));
+  }
+  return rects;
+}
+
+/** 翡翠票 corners —— 画框：4 大角(发光) + 8 边格 + 4 内格中心簇（4+8+4=16）。
+ *  4 角 flat index 0,3,12,15 → 视觉四角，呼应 idleCorners 把四角写成中奖演示。 */
+function layoutFrame(): CellRect[] {
+  const rects: CellRect[] = new Array(16);
+  const big = 72, small = 42;
+  // 4 角
+  rects[0] = rectCenter(52, 98, big);
+  rects[3] = rectCenter(288, 98, big);
+  rects[12] = rectCenter(52, 334, big);
+  rects[15] = rectCenter(288, 334, big);
+  // 8 边：上(1,2)/下(13,14) 各 2 个；左(4,8)/右(7,11) 各 2 个
+  for (const x of [131, 209]) {
+    rects[x === 131 ? 1 : 2] = rectCenter(x, 98, small);
+    rects[x === 131 ? 13 : 14] = rectCenter(x, 334, small);
+  }
+  for (const y of [177, 255]) {
+    rects[y === 177 ? 4 : 8] = rectCenter(52, y, small);
+    rects[y === 177 ? 7 : 11] = rectCenter(288, y, small);
+  }
+  // 4 内：中心 2×2 簇
+  rects[5] = rectCenter(145, 191, small);
+  rects[6] = rectCenter(195, 191, small);
+  rects[9] = rectCenter(145, 241, small);
+  rects[10] = rectCenter(195, 241, small);
+  return rects;
+}
+
+/** 紫晶票 multiplier —— 靶心：大中心格(index4) + 八环。eval 位置无关，环格任意分配。 */
+function layoutBullseye(): CellRect[] {
+  const rects: CellRect[] = new Array(9);
+  rects[4] = rectCenter(PLAY_CX, PLAY_CY, 100);
+  const ringCenters: ReadonlyArray<[number, number]> = [
+    [280, 216], [248, 294], [170, 326], [92, 294],
+    [60, 216], [92, 138], [170, 106], [248, 138],
+  ];
+  const ringIdx = [0, 1, 2, 3, 5, 6, 7, 8];
+  for (let k = 0; k < 8; k++) {
+    rects[ringIdx[k]] = rectCenter(ringCenters[k][0], ringCenters[k][1], 80);
+  }
+  return rects;
+}
+
+/** 红宝石票 fullhouse —— 无缝整墙 4×4 gap=0；中奖全同→整面墙同色=「满堂红」 */
+function layoutSolid(): CellRect[] {
+  const cell = 79;
+  const rects: CellRect[] = [];
+  for (let i = 0; i < 16; i++) {
+    const r = Math.floor(i / 4), c = i % 4;
+    rects.push({ x: 12 + c * cell, y: PLAY_TOP + r * cell, w: cell, h: cell });
+  }
+  return rects;
+}
+
+/** 玩法 → 排列样式。每档一种截然不同的摆法，把各档彩票视觉区分开。 */
+const LAYOUTS: Record<VariantId, (t: TierDef) => CellRect[]> = {
+  match3: layoutReels,
+  line: layoutDiamond,
+  rush: layoutPile,
+  corners: layoutFrame,
+  multiplier: layoutBullseye,
+  fullhouse: layoutSolid,
 };
 
 /**
@@ -406,8 +542,11 @@ const PIXEL_ICONS: Record<string, PixelIcon> = {
 export class Lottery {
   private state: GameState;
   private onCoins: () => void;
+  private onExit: () => void;
+  /** 当前是否处于彩票页面（enter→true / leave→false），供 Esc 判定 */
+  private active = false;
 
-  private modal!: HTMLDivElement;
+  private root!: HTMLDivElement;
   private coinsEl!: HTMLDivElement;
   private body!: HTMLDivElement;
   private lockProgress!: HTMLDivElement;
@@ -432,6 +571,8 @@ export class Lottery {
   private settled = false;
   private curGrid: Sym[] | null = null;
   private curTier: TierDef = TIERS[0];
+  /** 本张票实付金额（结算记 wagered 用，免费票为 0） */
+  private curWager = 0;
 
   // 刮开交互
   private scratching = false;
@@ -448,26 +589,26 @@ export class Lottery {
   private countTimer: number | null = null;
   private confettiLayer!: HTMLDivElement;
 
-  constructor(state: GameState, onCoins: () => void) {
+  constructor(state: GameState, onCoins: () => void, onExit: () => void, mount: HTMLElement) {
     this.state = state;
     this.onCoins = onCoins;
-    this.buildDom();
+    this.onExit = onExit;
+    this.buildDom(mount);
     this.drawIdle();
+    this.hint.textContent = this.mechanicHint(this.selected);
     this.refreshBuy();
   }
 
   // ---------- DOM ----------
-  private buildDom(): void {
-    const root = document.getElementById('gameRoot');
-    if (!root) return;
+  private buildDom(mount: HTMLElement): void {
     const wrap = document.createElement('div');
     wrap.innerHTML = `
-      <div class="modal" id="lotteryModal" aria-hidden="true">
+      <div class="lotto-page" id="lottoPage">
         <div class="modal-card lotto-card">
           <div class="modal-head">
             <div class="modal-title">🎰 刮刮乐</div>
             <div class="modal-coins" id="lottoCoins">🪙 0</div>
-            <button class="btn-close" id="closeLotto" aria-label="关闭">✕</button>
+            <button class="btn-close" id="closeLotto" aria-label="返回关卡选择">🏠</button>
           </div>
           <div class="lotto-body" id="lottoBody">
             <div class="lotto-locked" id="lottoLocked" hidden>
@@ -494,34 +635,34 @@ export class Lottery {
                 <button id="lottoBuy">购买 🪙30</button>
                 <button id="lottoRevealAll" disabled>全部刮开</button>
               </div>
-              <div class="lotto-hint" id="lottoHint">选择档位并购买 · 凑齐 3 个相同符号即中奖</div>
+              <div class="lotto-hint" id="lottoHint">选择档位并购买</div>
               <div class="lotto-stats" id="lottoStats"></div>
             </div>
           </div>
         </div>
       </div>`;
-    root.appendChild(wrap.firstElementChild as HTMLElement);
+    mount.appendChild(wrap.firstElementChild as HTMLElement);
 
-    this.modal = root.querySelector('#lotteryModal') as HTMLDivElement;
-    this.coinsEl = this.modal.querySelector('#lottoCoins') as HTMLDivElement;
-    this.body = this.modal.querySelector('#lottoBody') as HTMLDivElement;
-    this.lockProgress = this.modal.querySelector('#lottoLockProgress') as HTMLDivElement;
-    this.lockFill = this.modal.querySelector('#lottoLockFill') as HTMLDivElement;
-    this.tierBar = this.modal.querySelector('#lottoTiers') as HTMLDivElement;
-    this.reveal = this.modal.querySelector('#lottoReveal') as HTMLCanvasElement;
+    this.root = mount.querySelector('#lottoPage') as HTMLDivElement;
+    this.coinsEl = this.root.querySelector('#lottoCoins') as HTMLDivElement;
+    this.body = this.root.querySelector('#lottoBody') as HTMLDivElement;
+    this.lockProgress = this.root.querySelector('#lottoLockProgress') as HTMLDivElement;
+    this.lockFill = this.root.querySelector('#lottoLockFill') as HTMLDivElement;
+    this.tierBar = this.root.querySelector('#lottoTiers') as HTMLDivElement;
+    this.reveal = this.root.querySelector('#lottoReveal') as HTMLCanvasElement;
     this.rctx = this.reveal.getContext('2d')!;
-    this.scratch = this.modal.querySelector('#lottoScratch') as HTMLCanvasElement;
+    this.scratch = this.root.querySelector('#lottoScratch') as HTMLCanvasElement;
     this.sctx = this.scratch.getContext('2d', { willReadFrequently: true })!;
     this.scratch.style.display = 'none';
-    this.result = this.modal.querySelector('#lottoResult') as HTMLDivElement;
-    this.pill = this.modal.querySelector('#lottoPill') as HTMLDivElement;
-    this.confettiLayer = this.modal.querySelector('#lottoConfetti') as HTMLDivElement;
-    this.buyBtn = this.modal.querySelector('#lottoBuy') as HTMLButtonElement;
-    this.revealBtn = this.modal.querySelector('#lottoRevealAll') as HTMLButtonElement;
-    this.hint = this.modal.querySelector('#lottoHint') as HTMLDivElement;
-    this.luckFill = this.modal.querySelector('#luckFill') as HTMLDivElement;
-    this.luckText = this.modal.querySelector('#luckText') as HTMLSpanElement;
-    this.statsEl = this.modal.querySelector('#lottoStats') as HTMLDivElement;
+    this.result = this.root.querySelector('#lottoResult') as HTMLDivElement;
+    this.pill = this.root.querySelector('#lottoPill') as HTMLDivElement;
+    this.confettiLayer = this.root.querySelector('#lottoConfetti') as HTMLDivElement;
+    this.buyBtn = this.root.querySelector('#lottoBuy') as HTMLButtonElement;
+    this.revealBtn = this.root.querySelector('#lottoRevealAll') as HTMLButtonElement;
+    this.hint = this.root.querySelector('#lottoHint') as HTMLDivElement;
+    this.luckFill = this.root.querySelector('#luckFill') as HTMLDivElement;
+    this.luckText = this.root.querySelector('#luckText') as HTMLSpanElement;
+    this.statsEl = this.root.querySelector('#lottoStats') as HTMLDivElement;
 
     // 档位按钮（6 档：横向滚动条）
     for (const t of TIERS) {
@@ -538,13 +679,10 @@ export class Lottery {
     }
     this.tierBtns[this.selected.id].classList.add('active');
 
-    this.modal.querySelector('#closeLotto')!.addEventListener('click', () => this.close());
-    this.modal.addEventListener('click', (e) => {
-      if (e.target === this.modal) this.close();
-    });
+    this.root.querySelector('#closeLotto')!.addEventListener('click', () => this.onExit());
     this.buyBtn.addEventListener('click', () => this.buy());
     this.revealBtn.addEventListener('click', () => this.revealAll());
-    // Esc 关闭彩票弹窗（键盘/无障碍）
+    // Esc 离开彩票页面回关卡选择（键盘/无障碍）
     window.addEventListener('keydown', this.onKeyDown);
 
     // 刮开交互
@@ -566,29 +704,33 @@ export class Lottery {
     window.removeEventListener('pointerup', this.onUp);
     window.removeEventListener('pointercancel', this.onUp);
     window.removeEventListener('keydown', this.onKeyDown);
-    this.modal.remove();
+    this.root.remove();
   }
 
-  // ---------- 开/关 ----------
-  open(): void {
-    // 打开时回到上次购买的档位（若有记录）
+  // ---------- 进/离页面（由 ui.ts 的 go() 调用）----------
+  /** 进入彩票页面：刷新金币/解锁/档位/空闲卡面。可见性由屏幕路由负责。 */
+  enter(): void {
+    this.active = true;
+    // 进入时回到上次购买的档位（若有记录）
     const last = TIERS.find((t) => t.id === this.state.lotto.lastTier);
     if (last && this.phase !== 'scratching') this.applyTier(last, false);
     audio.sfx('lottoOpen');
-    this.modal.classList.add('open');
-    this.modal.setAttribute('aria-hidden', 'false');
     this.refreshUnlock();
     this.syncCoins();
     if (this.state.lottoUnlocked()) {
       this.syncLuck();
       this.syncStats();
       this.refreshBuy();
-      if (this.phase !== 'scratching') this.drawIdle();
+      if (this.phase !== 'scratching') {
+        this.drawIdle();
+        this.hint.textContent = this.mechanicHint(this.selected);
+      }
     }
   }
 
-  close(): void {
-    // 关闭中若仍在刮且未结算 → 静默结算（按已定结果发奖，不亏待玩家）
+  /** 离开彩票页面：若仍在刮且未结算 → 静默结算（按已定结果发奖，不亏待玩家）。 */
+  leave(): void {
+    this.active = false;
     if (this.phase === 'scratching' && !this.settled) this.settle();
     // 若正处于「全部刮开」淡出的 290ms 窗口内（revealed 但未 settle）→ 立即结算
     this.clearRevealTimer();
@@ -596,14 +738,12 @@ export class Lottery {
     this.scratching = false;
     this.activePt = null;
     this.pendingPt = null;
-    audio.stopScratch(); // 关闭弹窗时确保摩擦循环音停止
+    audio.stopScratch(); // 离开页面时确保摩擦循环音停止
     if (this.rafErase) {
       cancelAnimationFrame(this.rafErase);
       this.rafErase = 0;
     }
     this.clearCelebration();
-    this.modal.classList.remove('open');
-    this.modal.setAttribute('aria-hidden', 'true');
   }
 
   // ---------- 选档 ----------
@@ -626,7 +766,10 @@ export class Lottery {
     if (changed) audio.sfx('tierSelect', { semi: t.semi });
     this.syncLuck();
     this.refreshBuy();
-    if (redraw && this.phase !== 'scratching') this.drawIdle();
+    if (redraw && this.phase !== 'scratching') {
+      this.drawIdle();
+      this.hint.textContent = this.mechanicHint(t);
+    }
   }
 
   // ---------- 购买/发牌 ----------
@@ -634,16 +777,25 @@ export class Lottery {
     if (this.phase === 'scratching') return;
     if (!this.state.lottoUnlocked()) return; // 关卡未解锁，防御
     const tier = this.selected;
-    if (this.state.coins < tier.cost) {
+    const stats = this.lottoStats();
+    const cost = this.costFor(tier); // 已扣技能折扣
+    if (this.state.coins < cost) {
       this.flash('💰 金币不足，去投飞镖赚金币吧！');
       return;
     }
-    if (!this.state.spend(tier.cost)) return;
+    if (!this.state.spend(cost)) return;
+    // 免费票技能：按概率退回票价（不计入 totalEarned）
+    const free = Math.random() < stats.freeTicket;
+    this.curWager = free ? 0 : cost;
+    if (free) {
+      this.state.refund(cost);
+      this.flash('🎁 本张免费！');
+    }
     audio.sfx('buy', { semi: tier.semi });
     this.onCoins();
     this.syncCoins();
 
-    const deal = genBoard(tier, this.pityFor(tier));
+    const deal = genBoard(tier, this.pityFor(tier), stats);
     this.curGrid = deal.grid;
     this.curTier = tier;
     this.settled = false;
@@ -690,29 +842,35 @@ export class Lottery {
     if (this.settled || !this.curGrid) return;
     this.settled = true;
     const tier = this.curTier;
+    const stats = this.lottoStats();
     const ev = evalBoard(tier, this.curGrid);
     this.drawCard(tier, this.curGrid, ev.indices, this.ruleCaption());
-    if (ev.prize > 0) this.state.earn(ev.prize);
+    // 奖金套用技能倍率：全档 ×(1+prizeMult)，头奖档再 ×(1+jackpotMult)
+    const isJackpot = ev.prize >= topPrize(tier);
+    const prize =
+      ev.prize > 0
+        ? Math.round(ev.prize * (1 + stats.prizeMult) * (isJackpot ? 1 + stats.jackpotMult : 1))
+        : 0;
+    if (prize > 0) this.state.earn(prize);
     // 统计 + 幸运值（中奖清零 / 未中 +1 封顶）
     const pityBefore = this.pityFor(tier);
-    this.state.recordLotto(tier.cost, ev.prize, tier.id, tier.maxPity);
+    this.state.recordLotto(this.curWager, prize, tier.id, this.maxPityFor(tier));
     this.onCoins();
     this.syncCoins();
     this.syncLuck();
     this.syncStats();
 
-    const isJackpot = ev.prize >= topPrize(tier);
     // 音效：头奖 / 各玩法中奖 sting / 未中（+幸运值上升提示）
-    if (ev.prize > 0) {
+    if (prize > 0) {
       if (isJackpot) audio.sfx('jackpot', { semi: tier.semi });
       else audio.sfx(VARIANTS[tier.variant].winSfx, { semi: tier.semi });
     } else {
       audio.sfx('lottoMiss');
       if (this.pityFor(tier) > pityBefore) audio.sfx('luck');
     }
-    this.result.classList.add('show', ev.prize > 0 ? 'win' : 'miss');
-    if (ev.prize > 0) {
-      this.countUp(ev.prize, isJackpot); // 奖金数字滚动 + 头奖前缀
+    this.result.classList.add('show', prize > 0 ? 'win' : 'miss');
+    if (prize > 0) {
+      this.countUp(prize, isJackpot); // 奖金数字滚动 + 头奖前缀
       this.spawnConfetti(isJackpot); // 中奖彩纸（头奖更密 + 更多 emoji）
     } else {
       this.pill.textContent = '💔 未中';
@@ -720,7 +878,7 @@ export class Lottery {
     this.phase = 'revealed';
     this.refreshBuy();
     this.hint.textContent =
-      ev.prize > 0 ? `中奖 +${ev.prize}！可再买一张` : '未中奖，再来一张试试？';
+      prize > 0 ? `中奖 +${prize}！可再买一张` : '未中奖，再来一张试试？';
   }
 
   /** 奖金数字从 0 滚动到 target（easeOutCubic），头奖带 🎰 前缀 */
@@ -895,7 +1053,7 @@ export class Lottery {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape' && this.modal.classList.contains('open')) this.close();
+    if (e.key === 'Escape' && this.active) this.onExit();
   };
 
   /** destination-out 擦出一个软边圆点；半径按显示比例缩放，手指触感一致。
@@ -989,6 +1147,11 @@ export class Lottery {
     return VARIANTS[this.selected.variant].rule(this.selected);
   }
 
+  /** 侧栏玩法提示：随选中档位玩法变化（不再用 match3 文案占着所有档，让每档机制一目了然） */
+  private mechanicHint(t: TierDef): string {
+    return `选择档位并购买 · ${VARIANTS[t.variant].rule(t)}`;
+  }
+
   /** 档位中奖率定性标签（基于 winChance）：高频档中奖多、奖金小；低频档反之 */
   private oddsLabel(tier: TierDef): string {
     if (tier.winChance >= 0.28) return '中奖高';
@@ -1013,11 +1176,11 @@ export class Lottery {
     ctx.fill();
     ctx.restore();
 
-    // 内面板：深色背板（像素瓷砖的底）
+    // 内面板：档位色淡染深底，一眼区分铜/银/金/翡翠/紫晶/红宝石
     this.rr(6, 6, CW - 12, CH - 12, 12);
     const grad = ctx.createLinearGradient(0, 0, 0, CH);
-    grad.addColorStop(0, '#1d1640');
-    grad.addColorStop(1, '#0d0a1f');
+    grad.addColorStop(0, shade(tier.accent, -0.55));
+    grad.addColorStop(1, shade(tier.accent, -0.85));
     ctx.fillStyle = grad;
     ctx.fill();
 
@@ -1032,63 +1195,53 @@ export class Lottery {
     ctx.font = "12px 'Press Start 2P', monospace";
     ctx.fillText(`${tier.icon} ${tier.name}`, CW / 2, 28);
 
-    // 网格几何：按 cols×rows 动态计算，居中
-    const cols = tier.cols;
-    const rows = tier.rows;
-    const gap = cols >= 4 || rows >= 4 ? 7 : 9; // 宽缝隙，凸显像素分块
-    const top = 58;
-    const bottom = CH - 26;
-    const availW = CW - 24;
-    const availH = bottom - top;
-    const cell = Math.floor(
-      Math.min((availW - (cols - 1) * gap) / cols, (availH - (rows - 1) * gap) / rows),
-    );
-    const gridW = cols * cell + (cols - 1) * gap;
-    const gridH = rows * cell + (rows - 1) * gap;
-    const ox = (CW - gridW) / 2;
-    const oy = top + (availH - gridH) / 2;
-    const fontPx = Math.max(22, Math.min(52, Math.floor(cell * 0.52)));
-    const cellRect = (i: number): { x: number; y: number } => {
-      const r = Math.floor(i / cols);
-      const c = i % cols;
-      return { x: ox + c * (cell + gap), y: oy + r * (cell + gap) };
-    };
-
-    // 像素勾缝底：网格区填深色，瓷砖画在其上，缝隙露出成“缝”（直角硬边）
-    ctx.fillStyle = '#0a0716';
-    ctx.fillRect(ox - gap / 2 - 2, oy - gap / 2 - 2, gridW + gap + 4, gridH + gap + 4);
+    // 排列样式：每档玩法自带 layout，把每个 index 映射成背板矩形（差异化排列，
+    // 不再统一画成田字格）。rects 长度 == grid 长度（== tier.cols*tier.rows）。
+    const rects = LAYOUTS[tier.variant](tier);
+    const cornerSet = tier.variant === 'corners' ? new Set([0, 3, 12, 15]) : null;
 
     for (let i = 0; i < grid.length; i++) {
-      const { x, y } = cellRect(i);
+      const { x, y, w, h } = rects[i];
       const s = grid[i];
+      const minDim = Math.min(w, h);
 
-      // 统一暗格子背景（不再按符号分色瓷砖）：深底 + 细亮顶/左边，干净衬底
-      ctx.fillStyle = '#15102e';
-      ctx.fillRect(x, y, cell, cell);
+      // 暗格背景 + 细亮顶/左边；corners 的 4 角额外金色发光，呼应「四角同花」
+      if (cornerSet && cornerSet.has(i)) {
+        ctx.save();
+        ctx.shadowColor = hexA(tier.accent, 0.9);
+        ctx.shadowBlur = 14;
+        ctx.fillStyle = '#15102e';
+        ctx.fillRect(x, y, w, h);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = '#15102e';
+        ctx.fillRect(x, y, w, h);
+      }
       ctx.fillStyle = '#241d4a';
-      ctx.fillRect(x, y, cell, 2);
-      ctx.fillRect(x, y, 2, cell);
+      ctx.fillRect(x, y, w, 2);
+      ctx.fillRect(x, y, 2, h);
 
-      // 图案：优先手绘像素图，未收录则回退 emoji
+      // 图案：优先手绘像素图，未收录则回退 emoji（字号逐格缩放）
       const iconDef = PIXEL_ICONS[s.icon];
       if (iconDef) {
-        drawPixels(ctx, iconDef, x + cell / 2, y + cell / 2 + 1, cell * 0.74);
+        drawPixels(ctx, iconDef, x + w / 2, y + h / 2 + 1, minDim * 0.88);
       } else {
-        ctx.font = `${fontPx}px serif`;
+        const fp = Math.max(22, Math.min(52, Math.floor(minDim * 0.52)));
+        ctx.font = `${fp}px serif`;
         ctx.fillStyle = '#fff';
-        ctx.fillText(s.icon, x + cell / 2, y + cell / 2 + Math.floor(fontPx * 0.06));
+        ctx.fillText(s.icon, x + w / 2, y + h / 2 + Math.floor(fp * 0.06));
       }
     }
 
-    // 中奖高亮：金色发光硬边框
+    // 中奖高亮：金色发光硬边框，按各格实际矩形描边
     for (const i of highlight) {
-      const { x, y } = cellRect(i);
+      const { x, y, w, h } = rects[i];
       ctx.save();
       ctx.shadowColor = '#fff3b0';
       ctx.shadowBlur = 16;
       ctx.strokeStyle = '#fff3b0';
       ctx.lineWidth = 3;
-      ctx.strokeRect(x - 1.5, y - 1.5, cell + 3, cell + 3);
+      ctx.strokeRect(x - 1.5, y - 1.5, w + 3, h + 3);
       ctx.restore();
     }
 
@@ -1161,12 +1314,25 @@ export class Lottery {
     return this.state.lotto.pityByTier[t.id] ?? 0;
   }
 
+  /** 彩票技能派生属性（票价折扣 / 中奖率 / 奖金倍率 等） */
+  private lottoStats(): LottoStats {
+    return this.state.lottoStats();
+  }
+  /** 实付票价（已扣技能折扣） */
+  private costFor(t: TierDef): number {
+    return Math.round(t.cost * (1 - this.lottoStats().costDiscount));
+  }
+  /** 该档幸运值上限（基础 maxPity + 技能加成） */
+  private maxPityFor(t: TierDef): number {
+    return t.maxPity + this.lottoStats().pityCapBonus;
+  }
+
   /** 关卡解锁态：未解锁时显示锁定面板（遮住玩法区），并刷新进度条。
    *  飞镖在弹窗打开时仍累计 totalEarned，可能正好跨过门槛 → 实时解锁。 */
   refreshUnlock(): void {
     const unlocked = this.state.lottoUnlocked();
     this.body.classList.toggle('locked', !unlocked);
-    const lock = this.modal.querySelector('#lottoLocked') as HTMLDivElement;
+    const lock = this.root.querySelector('#lottoLocked') as HTMLDivElement;
     lock.hidden = unlocked;
     if (!unlocked) {
       const cur = this.state.totalEarned;
@@ -1192,9 +1358,10 @@ export class Lottery {
   private syncLuck(): void {
     const t = this.selected;
     const pity = this.pityFor(t);
-    const pct = Math.min(1, pity / t.maxPity);
+    const max = this.maxPityFor(t);
+    const pct = Math.min(1, pity / max);
     this.luckFill.style.width = `${pct * 100}%`;
-    this.luckText.textContent = `${pity}/${t.maxPity}`;
+    this.luckText.textContent = `${pity}/${max}`;
   }
 
   private syncStats(): void {
@@ -1212,9 +1379,10 @@ export class Lottery {
       this.buyBtn.textContent = '刮开中…';
       return;
     }
-    const afford = this.state.coins >= this.selected.cost;
+    const cost = this.costFor(this.selected);
+    const afford = this.state.coins >= cost;
     this.buyBtn.disabled = !afford;
-    this.buyBtn.textContent = `${this.phase === 'revealed' ? '再买一张' : '购买'} 🪙${this.selected.cost}`;
+    this.buyBtn.textContent = `${this.phase === 'revealed' ? '再买一张' : '购买'} 🪙${cost}`;
   }
 
   private flash(msg: string): void {

@@ -1,28 +1,30 @@
 import { GameState, LOTTO_UNLOCK_TOTAL } from './shared/state';
 import { Game } from './dart/game';
 import { ALL_NODES, NODE_BY_ID, getEdges } from './dart/skills';
+import { ALL_LOTTO_NODES, LOTTO_NODE_BY_ID, getLottoEdges } from './lottery/skills';
 import { Lottery } from './lottery/lottery';
 import { audio } from './shared/audio';
-import type { SkillBranch } from './shared/types';
+import type { LevelId, SkillNode } from './shared/types';
 
-// ===== HUD + 拓扑技能树 UI =====
+// ===== 关卡选择 + HUD + 拓扑技能树 UI =====
+// 导航：关卡选择主页 ↔ 飞镖关卡页 / 彩票关卡页（都是页面，非弹窗）。
+// 每个关卡有独立的技能树，购买技能仍用技能弹窗（按当前关卡切换树）。
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-const BRANCH_COLOR: Record<SkillBranch | 'core', string> = {
-  core: '#7df9ff',
-  target: '#e43b44',
-  speed: '#ffd966',
-  pet: '#b561d8',
-  combo: '#f5a23e',
-};
-
-const BRANCH_NAME: Record<SkillBranch, string> = {
-  target: '🎯 目标',
-  speed: '⚡ 速度',
-  pet: '🐾 宠物',
-  combo: '🔮 连击',
-};
+/** 关卡 → 其技能树描述符（节点表 / 边 / 分支配色 / 读写回调），供技能弹窗通用渲染 */
+interface TreeSpec {
+  level: LevelId;
+  title: string;
+  nodes: SkillNode[];
+  nodeById: Record<string, SkillNode>;
+  edges: Array<{ from: string; to: string }>;
+  branches: Record<string, { name: string; color: string }>;
+  owned: (id: string) => boolean;
+  prereqMet: (id: string) => boolean;
+  canBuy: (id: string) => boolean;
+  buy: (id: string) => boolean;
+}
 
 function svgEl(tag: string, attrs: Record<string, string> = {}): SVGElement {
   const el = document.createElementNS(SVG_NS, tag);
@@ -38,36 +40,59 @@ export function buildApp(state: GameState): Game {
     <div class="hud">
       <div class="hud-left">
         <span class="stat" id="coins">🪙 <b>0</b></span>
-        <span class="stat" id="score">🎯 <b>0</b></span>
+        <span class="stat" id="score" hidden>🎯 <b>0</b></span>
         <span class="stat" id="combo" hidden>🔥 <b>x1.0</b></span>
       </div>
       <div class="hud-title">PIXEL DART · 像素飞镖</div>
       <div class="hud-right">
+        <button class="btn-rotate" id="homeBtn" title="返回关卡选择" hidden>🏠</button>
+        <button class="btn-lotto" id="skillBtn" title="本关技能树" hidden>▣ 技能</button>
         <button class="btn-rotate" id="rotateBtn" title="旋转画面（横/竖屏切换）" aria-pressed="false">🔄</button>
         <button class="btn-rotate btn-mute" id="muteBtn" title="开关音效" aria-pressed="true">🔊</button>
-        <button class="btn-lotto" id="openLotto" title="刮刮乐 · 用金币博取奖金">🎰 彩票</button>
-        <button class="btn-skill" id="openSkill">技能树 ▣</button>
       </div>
     </div>
-    <div class="stage">
-      <canvas id="game"></canvas>
+
+    <div class="screens" id="screens">
+      <!-- 关卡选择主页 -->
+      <div class="screen screen-select active" id="screenSelect">
+        <div class="select-title">选择关卡</div>
+        <div class="select-sub">点选一个关卡进入</div>
+        <div class="level-cards">
+          <button class="level-card" id="cardDart">
+            <span class="lv-icon">🎯</span>
+            <span class="lv-name">飞镖场</span>
+            <span class="lv-desc">投掷飞镖赚金币 · 连击倍率</span>
+          </button>
+          <button class="level-card" id="cardLotto">
+            <span class="lv-icon">🎰</span>
+            <span class="lv-name">彩票站</span>
+            <span class="lv-desc" id="lottoCardDesc">刮刮乐 · 博取奖金</span>
+            <div class="lv-lock" id="lottoCardLock" hidden>
+              <div class="lv-lock-track"><div class="lv-lock-fill" id="lottoCardFill"></div></div>
+              <div class="lv-lock-text" id="lottoCardLockText">累计 0/500</div>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <!-- 飞镖关卡 -->
+      <div class="screen screen-dart" id="screenDart">
+        <canvas id="game"></canvas>
+      </div>
+
+      <!-- 彩票关卡（Lottery 类挂这里） -->
+      <div class="screen screen-lotto" id="screenLotto"></div>
     </div>
 
     <div class="modal" id="skillModal" aria-hidden="true">
       <div class="modal-card">
         <div class="modal-head">
-          <div class="modal-title">技能拓扑 · SKILL TREE</div>
-          <div class="modal-progress" id="modalProgress">▣ 0/29</div>
+          <div class="modal-title" id="skillTitle">技能拓扑 · SKILL TREE</div>
+          <div class="modal-progress" id="modalProgress">▣ 0/0</div>
           <div class="modal-coins" id="modalCoins">🪙 0</div>
           <button class="btn-close" id="closeSkill">✕</button>
         </div>
-        <div class="modal-legend">
-          <span style="color:${BRANCH_COLOR.target}">● 目标</span>
-          <span style="color:${BRANCH_COLOR.speed}">● 速度</span>
-          <span style="color:${BRANCH_COLOR.pet}">● 宠物</span>
-          <span style="color:${BRANCH_COLOR.combo}">● 技巧</span>
-          <span class="legend-hint">点亮节点解锁加成，前置节点需先解锁</span>
-        </div>
+        <div class="modal-legend" id="skillLegend"></div>
         <div class="tree-toolbar">
           <button class="btn-zoom" id="zoomIn" title="放大" aria-label="放大">➕</button>
           <button class="btn-zoom" id="zoomOut" title="缩小" aria-label="缩小">➖</button>
@@ -95,6 +120,7 @@ export function buildApp(state: GameState): Game {
 
   const coinsEl = app.querySelector<HTMLSpanElement>('#coins b')!;
   const scoreEl = app.querySelector<HTMLSpanElement>('#score b')!;
+  const scoreStat = app.querySelector<HTMLSpanElement>('#score')!;
   const modalCoinsEl = app.querySelector<HTMLSpanElement>('#modalCoins')!;
   const modalProgressEl = app.querySelector<HTMLSpanElement>('#modalProgress')!;
   const footEarnedEl = app.querySelector<HTMLSpanElement>('#footEarned')!;
@@ -131,7 +157,6 @@ export function buildApp(state: GameState): Game {
       comboB.textContent = `x${mult.toFixed(1)}`;
     }
   };
-  comboEl.hidden = false;
   updateCombo(0, 1);
 
   const canvas = app.querySelector<HTMLCanvasElement>('#game')!;
@@ -142,8 +167,12 @@ export function buildApp(state: GameState): Game {
     onOnboard: (kind) => onboardShow(kind),
   });
 
-  // ---- 刮刮乐（彩票关卡：累计获得达标后解锁）----
-  const lottoBtn = app.querySelector<HTMLButtonElement>('#openLotto')!;
+  // ---- 屏幕元素 ----
+  const screenSelect = app.querySelector<HTMLDivElement>('#screenSelect')!;
+  const screenDart = app.querySelector<HTMLDivElement>('#screenDart')!;
+  const screenLotto = app.querySelector<HTMLDivElement>('#screenLotto')!;
+  const homeBtn = app.querySelector<HTMLButtonElement>('#homeBtn')!;
+  const skillBtn = app.querySelector<HTMLButtonElement>('#skillBtn')!;
 
   // 顶部 toast：用于"未解锁"提示与"刚解锁"庆祝（轻量，无依赖）。
   // 挂到 #gameRoot 而非 #app：rotated 模式下 gameRoot 整体 rotate(90deg)，
@@ -186,16 +215,23 @@ export function buildApp(state: GameState): Game {
     showToast(ONBOARD_COPY[kind]);
   }
 
-  const lottery = new Lottery(state, () => refreshCoins());
+  // ---- 彩票（页面，挂 #screenLotto）----
+  const lottery = new Lottery(state, () => refreshCoins(), () => go('select'), screenLotto);
 
-  // 关卡解锁状态：派生自 state.totalEarned，无需持久化。
+  // ---- 关卡解锁态：派生自 state.totalEarned，无需持久化。----
+  const cardLotto = app.querySelector<HTMLButtonElement>('#cardLotto')!;
+  const lottoCardLock = app.querySelector<HTMLDivElement>('#lottoCardLock')!;
+  const lottoCardFill = app.querySelector<HTMLDivElement>('#lottoCardFill')!;
+  const lottoCardLockText = app.querySelector<HTMLDivElement>('#lottoCardLockText')!;
+  const lottoCardDesc = app.querySelector<HTMLSpanElement>('#lottoCardDesc')!;
+
   let lottoWasUnlocked = state.lottoUnlocked();
   function refreshLottoLock(): void {
     const unlocked = state.lottoUnlocked();
-    lottoBtn.classList.toggle('locked', !unlocked);
+    cardLotto.classList.toggle('locked', !unlocked);
+    lottoCardLock.hidden = unlocked;
     if (unlocked) {
-      lottoBtn.innerHTML = '🎰 彩票';
-      lottoBtn.title = '刮刮乐 · 用金币博取奖金';
+      lottoCardDesc.textContent = '刮刮乐 · 博取奖金';
       if (!lottoWasUnlocked) {
         lottoWasUnlocked = true;
         showToast('🎉 彩票关卡已解锁！');
@@ -204,22 +240,54 @@ export function buildApp(state: GameState): Game {
     } else {
       lottoWasUnlocked = false;
       const cur = Math.min(state.totalEarned, LOTTO_UNLOCK_TOTAL);
-      lottoBtn.innerHTML = `🔒 <b>${cur}/${LOTTO_UNLOCK_TOTAL}</b>`;
-      lottoBtn.title = `累计获得 ${LOTTO_UNLOCK_TOTAL} 金币解锁彩票关卡`;
+      const pct = Math.min(1, cur / LOTTO_UNLOCK_TOTAL);
+      lottoCardFill.style.width = `${pct * 100}%`;
+      lottoCardLockText.textContent = `🔒 累计 ${cur}/${LOTTO_UNLOCK_TOTAL}`;
+      lottoCardDesc.textContent = `累计获得 ${LOTTO_UNLOCK_TOTAL} 金币解锁`;
     }
   }
-  lottoBtn.addEventListener('click', () => {
+
+  // ---- 屏幕路由 ----
+  let current: 'select' | 'dart' | 'lotto' = 'select';
+  function go(name: 'select' | 'dart' | 'lotto'): void {
+    if (name === current) return;
+    const prev = current;
+    current = name;
+    screenSelect.classList.toggle('active', name === 'select');
+    screenDart.classList.toggle('active', name === 'dart');
+    screenLotto.classList.toggle('active', name === 'lotto');
+    // 飞镖循环：进入才跑，离开即停（省 CPU、避免在隐藏画布上空投）
+    if (prev === 'dart') game.stop();
+    if (name === 'dart') {
+      // 画布刚从 display:none 显示，强制重算尺寸再开循环，避免首帧用 0/旧尺寸渲染
+      window.dispatchEvent(new Event('resize'));
+      game.start();
+    }
+    // 彩票页面：进入刷新，离开静默结算
+    if (prev === 'lotto') lottery.leave();
+    if (name === 'lotto') lottery.enter();
+    // HUD：🏠/技能按钮仅在关卡页显示；score/combo 仅飞镖页
+    homeBtn.hidden = name === 'select';
+    skillBtn.hidden = name === 'select';
+    scoreStat.hidden = name !== 'dart';
+    comboEl.hidden = name !== 'dart';
+    refreshCoins();
+  }
+
+  app.querySelector<HTMLButtonElement>('#cardDart')!.addEventListener('click', () => go('dart'));
+  cardLotto.addEventListener('click', () => {
     if (!state.lottoUnlocked()) {
       showToast(
         `🔒 累计获得 ${LOTTO_UNLOCK_TOTAL} 金币解锁彩票（当前 ${state.totalEarned}）`,
       );
       return;
     }
-    lottery.open();
+    go('lotto');
   });
-  refreshLottoLock();
+  homeBtn.addEventListener('click', () => go('select'));
+  skillBtn.addEventListener('click', () => openSkill(current === 'lotto' ? 'lotto' : 'dart'));
 
-  // 金币变动时同步 HUD、刮刮乐弹窗与彩票解锁状态（飞镖 earn 时保持新鲜）。
+  // 金币变动时同步 HUD、彩票页面与彩票解锁状态（飞镖 earn 时保持新鲜）。
   // refreshCoins 是函数声明（提升），lottery / refreshLottoLock 在运行期已初始化。
   function refreshCoins(): void {
     updateCoins();
@@ -227,32 +295,74 @@ export function buildApp(state: GameState): Game {
     refreshLottoLock();
   }
 
-  // ---- 弹窗 ----
+  // ============ 技能弹窗（通用，按关卡切换树）============
+  const dartSpec: TreeSpec = {
+    level: 'dart',
+    title: '🎯 飞镖技能树',
+    nodes: ALL_NODES,
+    nodeById: NODE_BY_ID,
+    edges: getEdges(),
+    branches: {
+      target: { name: '目标', color: '#e43b44' },
+      speed: { name: '速度', color: '#ffd966' },
+      pet: { name: '宠物', color: '#b561d8' },
+      combo: { name: '技巧', color: '#f5a23e' },
+    },
+    owned: (id) => state.owned('dart', id),
+    prereqMet: (id) => state.prereqMet('dart', id),
+    canBuy: (id) => state.canBuy('dart', id),
+    buy: (id) => state.buy('dart', id),
+  };
+  const lottoSpec: TreeSpec = {
+    level: 'lotto',
+    title: '🎰 彩票技能树',
+    nodes: ALL_LOTTO_NODES,
+    nodeById: LOTTO_NODE_BY_ID,
+    edges: getLottoEdges(),
+    branches: {
+      luck: { name: '运气', color: '#4caf50' },
+      economy: { name: '经济', color: '#ffd45e' },
+      perk: { name: '福利', color: '#c061e0' },
+    },
+    owned: (id) => state.owned('lotto', id),
+    prereqMet: (id) => state.prereqMet('lotto', id),
+    canBuy: (id) => state.canBuy('lotto', id),
+    buy: (id) => state.buy('lotto', id),
+  };
+
   const modal = app.querySelector<HTMLDivElement>('#skillModal')!;
-  const openBtn = app.querySelector<HTMLButtonElement>('#openSkill')!;
   const closeBtn = app.querySelector<HTMLButtonElement>('#closeSkill')!;
   const resetBtn = app.querySelector<HTMLButtonElement>('#resetBtn')!;
   const buyBtn = app.querySelector<HTMLButtonElement>('#buyBtn')!;
   const detailName = app.querySelector<HTMLDivElement>('#detailName')!;
   const detailDesc = app.querySelector<HTMLDivElement>('#detailDesc')!;
   const detailCost = app.querySelector<HTMLSpanElement>('#detailCost')!;
+  const skillTitle = app.querySelector<HTMLDivElement>('#skillTitle')!;
+  const skillLegend = app.querySelector<HTMLDivElement>('#skillLegend')!;
 
+  let spec: TreeSpec = dartSpec; // 当前展示的技能树
   let selectedId: string | null = null;
   // 刚购买的节点 id：触发一次解锁扩散动画，renderTree 渲染一帧后即清空。
   let justBoughtId: string | null = null;
 
-  const openModal = () => {
+  function openSkill(level: LevelId): void {
+    spec = level === 'lotto' ? lottoSpec : dartSpec;
+    selectedId = null;
+    skillTitle.textContent = spec.title;
+    // 分支图例：按当前树动态生成
+    skillLegend.innerHTML =
+      Object.values(spec.branches)
+        .map((b) => `<span style="color:${b.color}">● ${b.name}</span>`)
+        .join('') + '<span class="legend-hint">点亮节点解锁加成，前置节点需先解锁</span>';
     modal.classList.add('open');
     modal.setAttribute('aria-hidden', 'false');
     renderTree();
     updateCoins();
-  };
+  }
   const closeModal = () => {
     modal.classList.remove('open');
     modal.setAttribute('aria-hidden', 'true');
   };
-
-  openBtn.addEventListener('click', openModal);
   closeBtn.addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => {
     if (e.target === modal) closeModal();
@@ -265,22 +375,24 @@ export function buildApp(state: GameState): Game {
   resetBtn.addEventListener('click', () => {
     if (confirm('确定重置全部存档？（金币与技能全部清空）')) {
       state.reset();
-      game.syncAfterBuy();
+      if (current === 'dart') game.syncAfterBuy();
       selectedId = null;
       updateCoins();
       updateScore();
       updateCombo(0, 1);
       refreshLottoLock(); // 重置后 totalEarned=0，彩票关卡应重新锁定
-      renderTree();
-      renderDetail();
+      if (modal.classList.contains('open')) {
+        renderTree();
+        renderDetail();
+      }
     }
   });
 
   buyBtn.addEventListener('click', () => {
     if (!selectedId) return;
-    if (state.buy(selectedId)) {
+    if (spec.buy(selectedId)) {
       audio.sfx('skill');
-      game.syncAfterBuy();
+      if (spec.level === 'dart') game.syncAfterBuy();
       refreshCoins(); // 统一走 refreshCoins（含 lottery.syncCoins / refreshLottoLock）
       justBoughtId = selectedId; // 标记刚解锁 → renderTree 画扩散光圈
       renderTree();
@@ -351,8 +463,8 @@ export function buildApp(state: GameState): Game {
   }
 
   function nodeState(id: string): 'owned' | 'available' | 'locked' {
-    if (state.owned(id)) return 'owned';
-    if (state.prereqMet(id)) return 'available';
+    if (spec.owned(id)) return 'owned';
+    if (spec.prereqMet(id)) return 'available';
     return 'locked';
   }
 
@@ -361,27 +473,24 @@ export function buildApp(state: GameState): Game {
     // 包裹组：所有边与节点都渲染进 #treeContent，便于整体施加视图变换。
     const content = svgEl('g', { id: 'treeContent' });
     svg.appendChild(content);
-    const edges = getEdges();
+    const edges = spec.edges;
 
     // 边
     for (const e of edges) {
-      const a = NODE_BY_ID[e.from];
-      const b = NODE_BY_ID[e.to];
-      const active = state.owned(e.from) && state.owned(e.to);
-      const half = state.owned(e.from) && !state.owned(e.to) && state.prereqMet(e.to);
+      const a = spec.nodeById[e.from];
+      const b = spec.nodeById[e.to];
+      const active = spec.owned(e.from) && spec.owned(e.to);
+      const half = spec.owned(e.from) && !spec.owned(e.to) && spec.prereqMet(e.to);
       const line = svgEl('line', {
         x1: String(a.pos.x),
         y1: String(a.pos.y),
         x2: String(b.pos.x),
         y2: String(b.pos.y),
       });
+      const bColor = spec.branches[b.branch]?.color ?? '#888';
       line.setAttribute(
         'stroke',
-        active
-          ? BRANCH_COLOR[b.branch]
-          : half
-            ? BRANCH_COLOR[b.branch] // 已解锁→后继：染目标分支色，体现路径延续
-            : '#3a3358',
+        active ? bColor : half ? bColor : '#3a3358',
       );
       line.setAttribute('stroke-width', active ? '0.9' : '0.6');
       line.setAttribute('stroke-dasharray', active ? '' : '1.6,1.4');
@@ -393,17 +502,17 @@ export function buildApp(state: GameState): Game {
     // 后渲染节点的实心圆盘按 z 序盖住（成本文字原本画在节点 g 内部下方，
     // 整个 g 会被后续 append 的节点 g 整体覆盖）。
     const costEls: SVGElement[] = [];
-    for (const node of ALL_NODES) {
+    for (const node of spec.nodes) {
       const st = nodeState(node.id);
-      const color = BRANCH_COLOR[node.branch];
+      const color = spec.branches[node.branch]?.color ?? '#888';
       const g = svgEl('g', { class: 'node' });
       g.setAttribute('transform', `translate(${node.pos.x},${node.pos.y})`);
       g.style.cursor = st === 'locked' ? 'not-allowed' : 'pointer';
 
-      const r = node.id === 'core' ? 4.4 : 3.7;
+      const r = node.id === spec.nodes[0].id ? 4.4 : 3.7;
       const owned = st === 'owned';
       // canBuy：available 且金币足够 —— 当前最该点的节点，单独给金色强脉冲。
-      const canBuy = st === 'available' && state.canBuy(node.id);
+      const canBuy = st === 'available' && spec.canBuy(node.id);
       // availPoor：前置已满足但金币不足 —— 路径已打通、就差钱，需独立区分于 locked。
       const availPoor = st === 'available' && !canBuy;
 
@@ -501,7 +610,7 @@ export function buildApp(state: GameState): Game {
           'stroke-linejoin': 'round',
           fill:
             node.cost > 0
-              ? state.canBuy(node.id)
+              ? spec.canBuy(node.id)
                 ? '#ffd966'
                 : st === 'owned'
                   ? '#7df9ff'
@@ -545,7 +654,7 @@ export function buildApp(state: GameState): Game {
     for (const el of costEls) labelsG.appendChild(el);
 
     // 解锁进度
-    modalProgressEl.textContent = `▣ ${ALL_NODES.filter((n) => state.owned(n.id)).length}/${ALL_NODES.length}`;
+    modalProgressEl.textContent = `▣ ${spec.nodes.filter((n) => spec.owned(n.id)).length}/${spec.nodes.length}`;
 
     // 重建内容后重新应用当前视图变换。
     applyView();
@@ -664,8 +773,9 @@ export function buildApp(state: GameState): Game {
       buyBtn.textContent = '购买';
       return;
     }
-    const node = NODE_BY_ID[selectedId];
-    detailName.textContent = `${node.icon} ${node.name} · ${BRANCH_NAME[node.branch]}`;
+    const node = spec.nodeById[selectedId];
+    const branchName = spec.branches[node.branch]?.name ?? '';
+    detailName.textContent = `${node.icon} ${node.name}${branchName ? ' · ' + branchName : ''}`;
     detailDesc.textContent = node.desc || '（无加成）';
     const st = nodeState(node.id);
     if (st === 'owned') {
@@ -677,7 +787,7 @@ export function buildApp(state: GameState): Game {
       buyBtn.disabled = true;
       buyBtn.textContent = '未达成';
     } else {
-      const ok = state.canBuy(node.id);
+      const ok = spec.canBuy(node.id);
       detailCost.textContent = ok
         ? `🪙 ${node.cost}`
         : `🪙 ${node.cost}（金币不足）`;
@@ -729,7 +839,8 @@ export function buildApp(state: GameState): Game {
     if (audio.isEnabled()) audio.sfx('coin');
   });
 
-  updateCoins();
+  // 初始：停在关卡选择主页（飞镖循环不启动，进入飞镖关卡才 start）。
+  refreshCoins();
   updateScore();
   return game;
 }

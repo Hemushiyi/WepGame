@@ -1,9 +1,13 @@
+import type { LottoStats } from '../shared/types';
+
 // ===== 刮刮乐纯逻辑引擎（无 DOM、无副作用，便于仿真验证 RTP / 不变量）=====
 //
 // 开奖结果在「购买时」就已确定（与真实刮刮乐一致）：genBoard 先按 winChance+pity
 // 掷出中/不中，再交给对应玩法的 Variant.gen 构造合法棋盘。每种玩法各自保证：
 //   ① gen(lose) 复盘必为 0 分；② gen(win) 复盘必 >0 分且只命中预期组合。
 // 整体期望返奖率 RTP ≈ 0.82–0.90（负期望，作为金币消耗口子），见 sim 验证注释。
+// 注：彩票技能树（LottoStats）可提升中奖率/幸运值/奖金倍率，会扰动 RTP；
+//     state.lottoStats() 已对各维度设上限，整体仍保持负期望。
 
 export interface Sym {
   icon: string;
@@ -45,6 +49,17 @@ export interface BoardEval {
 export const LUCK_BONUS_PER_PITY = 0.006;
 // 单次中奖概率硬上限（兜底护栏）。
 export const PER_DRAW_CAP = 0.4;
+
+/** 零加成占位（无技能时 / 仿真用）。genBoard 默认即此。 */
+export const NO_LOTTO_STATS: LottoStats = {
+  costDiscount: 0,
+  winBonus: 0,
+  pityBonus: 0,
+  pityCapBonus: 0,
+  prizeMult: 0,
+  jackpotMult: 0,
+  freeTicket: 0,
+};
 
 // ---------- 随机工具 ----------
 export function randInt(n: number): number {
@@ -279,6 +294,25 @@ function idleFromLegend(tier: TierDef): Sym[] {
   while (grid.length < n) grid.push(miss);
   return shuffle(grid);
 }
+/** match3 玩法预览：最上行放 3 个相同最高奖符，直示"三连中奖" */
+function idleMatch3(tier: TierDef): Sym[] {
+  const cols = tier.cols, rows = tier.rows, n = cols * rows;
+  const miss = missSym(tier);
+  const grid: Sym[] = new Array(n).fill(miss);
+  const top = prizeSymbols(tier).sort((a, b) => b.prize - a.prize)[0] ?? miss;
+  // 最上行前 3 格放同符，一眼看懂"凑齐三连"
+  for (let c = 0; c < cols && c < 3; c++) grid[c] = top;
+  return grid;
+}
+/** line 玩法预览：走对角线，直示"一条线即中奖" */
+function idleLine(tier: TierDef): Sym[] {
+  const cols = tier.cols, rows = tier.rows, n = cols * rows;
+  const miss = missSym(tier);
+  const grid: Sym[] = new Array(n).fill(miss);
+  const top = prizeSymbols(tier).sort((a, b) => b.prize - a.prize)[0] ?? miss;
+  for (let i = 0; i < Math.min(cols, rows); i++) grid[i * cols + i] = top;
+  return grid;
+}
 function idleRush(tier: TierDef): Sym[] {
   const n = tier.cols * tier.rows;
   const coins = tier.symbols.filter((s) => (RUSH_VALUES[s.icon] ?? s.prize) > 0);
@@ -352,7 +386,7 @@ const match3Variant: Variant = {
   rule: () => '凑齐3连中奖 · 4连x2 · 5连x3',
   legend: (t) => prizeSymbols(t).map((s) => `${s.icon}×${s.prize}`).join('  '),
   topPrize: (t) => prizeSymbols(t).reduce((m, s) => Math.max(m, s.prize), 0),
-  idlePreview: idleFromLegend,
+  idlePreview: idleMatch3,
 };
 
 const lineVariant: Variant = {
@@ -375,7 +409,7 @@ const lineVariant: Variant = {
   rule: () => '一条横竖斜连线即中奖(1x)',
   legend: (t) => prizeSymbols(t).map((s) => `${s.icon}×${s.prize}`).join('  '),
   topPrize: (t) => prizeSymbols(t).reduce((m, s) => Math.max(m, s.prize), 0),
-  idlePreview: idleFromLegend,
+  idlePreview: idleLine,
 };
 
 const rushVariant: Variant = {
@@ -583,9 +617,16 @@ export function topPrize(tier: TierDef): number {
   return VARIANTS[tier.variant].topPrize(tier);
 }
 
-/** 生成一张彩票：按 winChance + pity 定输赢，再交对应玩法构造合法棋盘 */
-export function genBoard(tier: TierDef, pity: number): { grid: Sym[]; eval: BoardEval } {
-  const wc = Math.min(tier.winChance + LUCK_BONUS_PER_PITY * pity, PER_DRAW_CAP);
+/** 生成一张彩票：按 winChance + pity + 彩票技能(LottoStats) 定输赢，再交对应玩法构造合法棋盘 */
+export function genBoard(
+  tier: TierDef,
+  pity: number,
+  stats: LottoStats = NO_LOTTO_STATS,
+): { grid: Sym[]; eval: BoardEval } {
+  const wc = Math.min(
+    tier.winChance + (LUCK_BONUS_PER_PITY + stats.pityBonus) * pity + stats.winBonus,
+    PER_DRAW_CAP,
+  );
   const win = Math.random() < wc;
   const grid = VARIANTS[tier.variant].gen(tier, win);
   return { grid, eval: VARIANTS[tier.variant].eval(tier, grid) };

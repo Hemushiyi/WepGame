@@ -168,14 +168,11 @@ export function drawBoard(env: SceneEnv): void {
   pixelCircleRing(ctx, cx, cy, r3, col('c'));
   pixelCircleRing(ctx, cx, cy, r4, col('c'));
 
-  // ---------- 7. 靶心 ----------
-  // 外靶心：红 A（centerRadius 圆）
-  pixelCircle(ctx, cx, cy, centerRadius, col('A'));
-  // 内黄心：半径 max(2, centerRadius - 6)，颜色 C
-  const yellowR = Math.max(2, centerRadius - 6);
-  pixelCircle(ctx, cx, cy, yellowR, col('C'));
-  // 黄心外圈一圈钢丝 c 收边
+  // ---------- 7. 靶心（仅钢丝圈定位，不填实心，避免与瞄准点双圆心混淆） ----------
   pixelCircleRing(ctx, cx, cy, centerRadius, col('c'));
+  // 内圈细线
+  const innerR = Math.max(2, centerRadius - 6);
+  pixelCircleRing(ctx, cx, cy, innerR, col('c'));
 
   // ---------- 8. 高光（盘面左上方沿弧线的亮白点） ----------
   // 用基于索引的确定性伪随机决定弧上若干亮白像素位置。

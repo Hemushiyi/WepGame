@@ -2,8 +2,11 @@
 
 export type Vec2 = { x: number; y: number };
 
-/** 技能分支 */
-export type SkillBranch = 'target' | 'speed' | 'pet' | 'combo';
+/** 技能分支（飞镖四分支 + 彩票三分支） */
+export type SkillBranch = 'target' | 'speed' | 'pet' | 'combo' | 'luck' | 'economy' | 'perk';
+
+/** 关卡 id：每个关卡有自己独立的技能树与技能集合 */
+export type LevelId = 'dart' | 'lotto';
 
 /** 单个技能节点的效果（解锁后累加到派生属性上） */
 export type SkillEffect =
@@ -20,7 +23,15 @@ export type SkillEffect =
   | { kind: 'petReward'; value: number } // 宠物命中奖励占玩家的比例（加法）
   | { kind: 'comboCap'; value: number } // 连击倍率上限（加法）
   | { kind: 'comboShield'; value: number } // 失误时保留的连击比例（0..1）
-  | { kind: 'windResist'; value: number }; // 抵御风向影响（0..1）
+  | { kind: 'windResist'; value: number } // 抵御风向影响（0..1）
+  // ---- 彩票技能（仅作用于彩票关卡）----
+  | { kind: 'lottoCost'; value: number } // 票价折扣比例（加法，0..0.5）
+  | { kind: 'lottoWin'; value: number } // 基础中奖率加成（加法）
+  | { kind: 'lottoPityBonus'; value: number } // 每点幸运值的概率加成增强（加到 LUCK_BONUS_PER_PITY）
+  | { kind: 'lottoPityCap'; value: number } // 各档 maxPity 加成
+  | { kind: 'lottoPrizeMult'; value: number } // 全档奖金倍率（加法）
+  | { kind: 'lottoJackpotMult'; value: number } // 头奖档奖金额外倍率（加法）
+  | { kind: 'lottoFreeTicket'; value: number }; // 购票免费概率（加法，0..0.3）
 
 /** 技能树节点 */
 export interface SkillNode {
@@ -56,6 +67,17 @@ export interface DerivedStats {
   comboCap: number; // 连击倍率上限（基础 2.0）
   comboShield: number; // 失误时保留的连击比例（0..1）
   windResist: number; // 抵御风向影响（0..1）
+}
+
+/** 彩票关卡的派生属性（由彩票技能树解锁节点累加） */
+export interface LottoStats {
+  costDiscount: number; // 票价折扣（0..0.5），实付 = 票价*(1-costDiscount)
+  winBonus: number; // 加到每张票的基础中奖率
+  pityBonus: number; // 每点幸运值的概率加成增强（叠加在 LUCK_BONUS_PER_PITY 上）
+  pityCapBonus: number; // 各档幸运值上限 maxPity 的加成
+  prizeMult: number; // 全档奖金倍率（加法）
+  jackpotMult: number; // 头奖档奖金的额外倍率（加法）
+  freeTicket: number; // 购票免费概率（0..0.3）
 }
 
 /** 飞镖运行状态 */

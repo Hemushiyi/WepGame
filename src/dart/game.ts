@@ -23,7 +23,7 @@ import {
 } from './render/background';
 import { drawBoard } from './render/board';
 import { drawCharacter, drawPet } from './render/character';
-import { drawAim, drawDart, drawDirection, drawFloats, drawHint } from './render/fx';
+import { drawAim, drawDart, drawFloats, drawHint } from './render/fx';
 import { juice } from './render/juice';
 import { audio } from '../shared/audio';
 
@@ -490,8 +490,12 @@ export class Game {
     ctx.drawImage(this.boardCanvas, 0, 0);
 
     // 4) 前景动态实体
-    drawAim(env, this.aimY, this.throwAnimLeft > 0);
-    drawDirection(env, this.aimDir * DIR_RANGE, this.throwAnimLeft > 0);
+    drawAim(
+      env,
+      BOARD_CENTER.x + this.aimDir * DIR_RANGE,
+      this.aimY + this.windOffset(),
+      this.throwAnimLeft > 0,
+    );
     this.drawWindUI(env.ctx);
     drawCharacter(
       env,
@@ -537,18 +541,7 @@ export class Game {
     ctx.fillStyle = col;
     ctx.fillText('WIND 风', gx, gy - 2);
 
-    // 预测落点（2D）：方向定 X、aimY+风 定 Y，橙色十字 + 小圆环标记真实落点
+    // 预测落点已由 drawAim 统一绘制（呼吸圈 + 内核，更大更清晰），这里不再画小十字
     if (this.cooldownLeft > 0) return;
-    const predX = Math.round(BOARD_CENTER.x + this.aimDir * DIR_RANGE);
-    const predY = Math.round(this.aimY + this.windOffset());
-    const predCol = '#ff8c42';
-    // 十字刻度（4 短臂，留中心空隙）
-    pixelLine(ctx, predX - 5, predY, predX - 2, predY, predCol);
-    pixelLine(ctx, predX + 2, predY, predX + 5, predY, predCol);
-    pixelLine(ctx, predX, predY - 5, predX, predY - 2, predCol);
-    pixelLine(ctx, predX, predY + 2, predX, predY + 5, predCol);
-    // 中心小圆环 + 内点
-    pixelCircleRing(ctx, predX, predY, 3, predCol);
-    pixelCircle(ctx, predX, predY, 1, predCol);
   }
 }

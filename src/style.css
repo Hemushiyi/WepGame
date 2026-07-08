@@ -192,6 +192,139 @@ body {
   cursor: pointer;
 }
 
+/* ---------- 屏幕 / 关卡选择 ---------- */
+.screens {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.screen {
+  position: absolute;
+  inset: 0;
+  display: none;
+  overflow: hidden;
+}
+.screen.active {
+  display: flex;
+}
+
+/* 关卡选择主页 */
+.screen-select {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: #0b0a1f;
+  padding: 16px;
+  text-align: center;
+}
+.select-title {
+  font-family: var(--pixel);
+  font-size: 18px;
+  color: var(--accent);
+  letter-spacing: 1px;
+  text-shadow: 0 2px 0 #2a2150;
+}
+.select-sub {
+  font-size: 12px;
+  color: var(--ink);
+  opacity: 0.7;
+  margin-bottom: 16px;
+}
+.level-cards {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: 100%;
+  max-width: 540px;
+}
+.level-card {
+  width: 158px;
+  min-height: 184px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 18px 12px;
+  background: linear-gradient(#1c1640, #140f30);
+  border: 3px solid #4a3f7a;
+  border-radius: 14px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform 0.06s, border-color 0.12s, box-shadow 0.12s;
+}
+.level-card:hover {
+  border-color: var(--cyan);
+  box-shadow: 0 0 14px rgba(125, 249, 255, 0.25);
+}
+.level-card:active {
+  transform: translateY(3px);
+}
+.level-card.locked {
+  opacity: 0.92;
+}
+.lv-icon {
+  font-size: 42px;
+  filter: drop-shadow(0 2px 0 #000);
+}
+.lv-name {
+  font-family: var(--pixel);
+  font-size: 13px;
+  color: var(--accent);
+}
+.lv-desc {
+  font-size: 11px;
+  color: var(--ink);
+  opacity: 0.82;
+  line-height: 1.4;
+}
+.lv-lock {
+  width: 100%;
+  margin-top: 8px;
+}
+.lv-lock-track {
+  height: 8px;
+  background: #0b0a1f;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid #2a2150;
+}
+.lv-lock-fill {
+  height: 100%;
+  background: var(--cyan);
+  width: 0%;
+}
+.lv-lock-text {
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: var(--ink);
+  opacity: 0.85;
+  margin-top: 5px;
+}
+
+/* 飞镖关卡：画布铺满（#game 已 position:absolute inset:0） */
+.screen-dart {
+  background: #0b0a1f;
+}
+
+/* 彩票关卡：lotto-page 填满屏幕 */
+.screen-lotto {
+  background: #0b0a1f;
+}
+.lotto-page {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right))
+    max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
+  overflow: auto;
+}
+
 /* ---------- 模态 / 技能树 ---------- */
 .modal {
   position: fixed;
