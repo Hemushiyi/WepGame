@@ -450,6 +450,72 @@ function stopScratch(): void {
 }
 
 // ---- 公开 API ----
+// ============ 背景音乐（程序生成芯片风 BGM）============
+// 零音频资源：oscillator + gain 包络实时合成。lookahead 调度器循环播 8 步琶音 + 低音，
+// 按 mood 切音阶/tempo/波形。所有错误吞掉，绝不影响游戏。开关/音量由 UI 传入（自洽）。
+type Mood = 'menu' | 'dart' | 'lotto' | 'battle' | 'rps' | 'shooter';
+interface MoodSpec { root: number; scale: number[]; step: number; wave: OscillatorType; bassEvery: number; }
+const MOODS: Record<Mood, MoodSpec> = {
+  menu: { root: 220, scale: [0, 3, 5, 7, 10], step: 0.42, wave: 'triangle', bassEvery: 4 },
+  dart: { root: 262, scale: [0, 2, 4, 7, 9], step: 0.34, wave: 'square', bassEvery: 4 },
+  lotto: { root: 196, scale: [0, 3, 5, 7, 10], step: 0.46, wave: 'triangle', bassEvery: 4 },
+  battle: { root: 165, scale: [0, 3, 5, 6, 7, 10], step: 0.24, wave: 'square', bassEvery: 4 },
+  rps: { root: 233, scale: [0, 2, 3, 7, 8], step: 0.3, wave: 'triangle', bassEvery: 4 },
+  shooter: { root: 147, scale: [0, 3, 5, 7, 10], step: 0.2, wave: 'square', bassEvery: 2 },
+};
+let musicOn = true;
+let musicVol = 0.5;
+let musicGain: GainNode | null = null;
+let musicTimer: number | null = null;
+let nextNoteTime = 0;
+let stepIdx = 0;
+let curMood: Mood = 'menu';
+function noteFreq(root: number, semis: number): number { return root * Math.pow(2, semis / 12); }
+function scheduleNote(freq: number, t: number, dur: number, peak: number, wave: OscillatorType): void {
+  const c = ctx; const g = musicGain;
+  if (!c || !g) return;
+  const osc = c.createOscillator(); const env = c.createGain();
+  osc.type = wave; osc.frequency.value = freq;
+  env.gain.setValueAtTime(0, t);
+  env.gain.linearRampToValueAtTime(peak, t + 0.012);
+  env.gain.exponentialRampToValueAtTime(0.0008, t + dur);
+  osc.connect(env); env.connect(g);
+  osc.start(t); osc.stop(t + dur + 0.02);
+}
+function musicScheduler(): void {
+  const c = ctx;
+  if (!c || !musicGain) return;
+  const spec = MOODS[curMood];
+  const stepDur = spec.step;
+  while (nextNoteTime < c.currentTime + 0.2) {
+    if (musicOn) {
+      const len = spec.scale.length;
+      const i = stepIdx % (len * 2);
+      const idx = i < len ? i : len * 2 - 1 - i;
+      scheduleNote(noteFreq(spec.root, spec.scale[idx] + 12), nextNoteTime, stepDur * 0.9, 0.18, spec.wave);
+      if (stepIdx % spec.bassEvery === 0) scheduleNote(noteFreq(spec.root, 0), nextNoteTime, stepDur * 1.6, 0.22, 'triangle');
+    }
+    nextNoteTime += stepDur;
+    stepIdx++;
+  }
+}
+function startMusicEngine(): void {
+  if (musicTimer != null) return;
+  const c = ensureContext();
+  if (!c) return;
+  if (!musicGain) {
+    musicGain = c.createGain();
+    musicGain.gain.value = musicOn ? musicVol * 0.12 : 0;
+    musicGain.connect(c.destination);
+  }
+  nextNoteTime = c.currentTime + 0.1;
+  musicTimer = window.setInterval(musicScheduler, 25);
+}
+function applyMusicGain(): void {
+  if (musicGain) musicGain.gain.value = musicOn ? musicVol * 0.12 : 0;
+}
+let hapticsOn = true;
+
 export const audio: {
   sfx(name: SfxName, opts?: { semi?: number }): void;
   startScratch(): void;
@@ -457,6 +523,12 @@ export const audio: {
   setEnabled(on: boolean): void;
   toggle(): boolean;
   isEnabled(): boolean;
+  setMusicEnabled(on: boolean): void;
+  setMusicVolume(v: number): void;
+  setMusicMood(mood: Mood): void;
+  unlockMusic(): void; // 用户手势后启动 BGM 引擎
+  setHapticsEnabled(on: boolean): void;
+  haptic(ms: number): void;
 } = {
   sfx(name, opts) {
     if (!enabled) return;
@@ -552,5 +624,32 @@ export const audio: {
 
   isEnabled() {
     return enabled;
+  },
+
+  setMusicEnabled(on) {
+    musicOn = on;
+    applyMusicGain();
+  },
+  setMusicVolume(v) {
+    musicVol = Math.max(0, Math.min(1, v));
+    applyMusicGain();
+  },
+  setMusicMood(mood) {
+    curMood = mood;
+  },
+  unlockMusic() {
+    tryResume();
+    startMusicEngine();
+  },
+  setHapticsEnabled(on) {
+    hapticsOn = on;
+  },
+  haptic(ms) {
+    if (!hapticsOn) return;
+    try {
+      navigator.vibrate?.(ms);
+    } catch {
+      /* 静默 */
+    }
   },
 };

@@ -2,7 +2,7 @@
 
 export type Vec2 = { x: number; y: number };
 
-/** 技能分支（飞镖五分支 + 彩票三分支 + 打怪三分支） */
+/** 技能分支（飞镖五分支 + 彩票三分支 + 打怪三分支 + 锤剪布三分支 + 射击三分支） */
 export type SkillBranch =
   | 'target'
   | 'speed'
@@ -14,10 +14,16 @@ export type SkillBranch =
   | 'perk'
   | 'power'
   | 'agility'
-  | 'vitality';
+  | 'vitality'
+  | 'atk'
+  | 'mind'
+  | 'guard'
+  | 'fire'
+  | 'dodge'
+  | 'hull';
 
 /** 关卡 id：每个关卡有自己独立的技能树与技能集合 */
-export type LevelId = 'dart' | 'lotto' | 'battle';
+export type LevelId = 'dart' | 'lotto' | 'battle' | 'rps' | 'shooter';
 
 /** 单个技能节点的效果（解锁后累加到派生属性上） */
 export type SkillEffect =
@@ -91,7 +97,24 @@ export type SkillEffect =
   | { kind: 'battleMaxHp'; value: number } // 最大血量（加法）
   | { kind: 'battleCrit'; value: number } // 暴击概率（加法，0..1）
   | { kind: 'battleLifesteal'; value: number } // 每次命中回血（加法）
-  | { kind: 'battleCoin'; value: number }; // 击杀金币加成（加法比例）
+  | { kind: 'battleCoin'; value: number } // 击杀金币加成（加法比例）
+  // ---- 锤剪布技能（仅作用于锤剪布关卡）----
+  | { kind: 'rpsDamage'; value: number } // 每胜伤害（加法）
+  | { kind: 'rpsMaxHp'; value: number } // 最大血量（加法）
+  | { kind: 'rpsComboCap'; value: number } // 连击倍率上限（加法）
+  | { kind: 'rpsCrit'; value: number } // 暴击概率（加法，0..1）
+  | { kind: 'rpsTell'; value: number } // 读招窗口时长（毫秒，加法）
+  | { kind: 'rpsTiebreak'; value: number } // 平局转胜概率（加法，0..1）
+  | { kind: 'rpsLifesteal'; value: number } // 每胜回血（加法）
+  | { kind: 'rpsCoin'; value: number } // 击杀金币加成（加法比例）
+  // ---- 射击关卡技能（仅作用于射击关卡）----
+  | { kind: 'shooterDamage'; value: number } // 每发伤害（加法）
+  | { kind: 'shooterFireRate'; value: number } // 射击间隔（毫秒，加法，通常为负）
+  | { kind: 'shooterMulti'; value: number } // 额外散射弹数（加法整数）
+  | { kind: 'shooterMaxHp'; value: number } // 最大血量（加法）
+  | { kind: 'shooterSpeed'; value: number } // 跟手速度 lerp 系数（加法）
+  | { kind: 'shooterRegen'; value: number } // 每秒回血（加法）
+  | { kind: 'shooterCoin'; value: number }; // 击杀金币加成（加法比例）
 
 /** 技能树节点 */
 export interface SkillNode {
@@ -184,6 +207,30 @@ export interface BattleStats {
   crit: number; // 暴击概率（0..1）
   critMult: number; // 暴击倍率（固定 2）
   lifesteal: number; // 每次命中回血（整数）
+  coinBonus: number; // 击杀金币加成（加法比例）
+}
+
+/** 锤剪布关卡的派生属性（由锤剪布技能树解锁节点累加） */
+export interface RpsStats {
+  damage: number; // 每胜造成伤害（基础 10）
+  maxHp: number; // 玩家最大血量（基础 100）
+  comboCap: number; // 连击倍率上限（基础 2.0）
+  crit: number; // 暴击概率（0..1）
+  critMult: number; // 暴击倍率（固定 2）
+  tellWindow: number; // 读招窗口时长（毫秒，基础 1200）
+  tiebreaker: number; // 平局转胜概率（0..1）
+  lifesteal: number; // 每胜回血（整数）
+  coinBonus: number; // 击杀金币加成（加法比例）
+}
+
+/** 射击关卡的派生属性（由射击技能树解锁节点累加） */
+export interface ShooterStats {
+  damage: number; // 每发伤害（基础 1）
+  fireInterval: number; // 射击间隔毫秒（基础 220）
+  multishot: number; // 额外散射弹数（基础 0）
+  maxHp: number; // 最大血量（基础 3）
+  moveSpeed: number; // 跟手 lerp 系数（基础 0.25）
+  regen: number; // 每秒回血（基础 0）
   coinBonus: number; // 击杀金币加成（加法比例）
 }
 

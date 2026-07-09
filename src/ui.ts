@@ -1,13 +1,19 @@
-import { GameState, LOTTO_UNLOCK_TOTAL } from './shared/state';
+import { GameState, LOTTO_UNLOCK_TOTAL, todayStr, META_DEFS } from './shared/state';
+import { ACHIEVEMENTS, newlyCompleted } from './shared/achievements';
 import { Game } from './dart/game';
 import { ALL_NODES, NODE_BY_ID, getEdges } from './dart/skills';
 import { ALL_LOTTO_NODES, LOTTO_NODE_BY_ID, getLottoEdges } from './lottery/skills';
 import { ALL_BATTLE_NODES, BATTLE_NODE_BY_ID, getBattleEdges } from './battle/skills';
-import { Battle } from './battle/game';
+import { Battle, MODIFIERS, type Modifier } from './battle/game';
+import { ALL_RPS_NODES, RPS_NODE_BY_ID, getRpsEdges } from './rps/skills';
+import { RpsBattle } from './rps/game';
+import { ALL_SHOOTER_NODES, SHOOTER_NODE_BY_ID, getShooterEdges } from './shooter/skills';
+import { Shooter } from './shooter/game';
 import { Lottery } from './lottery/lottery';
 import { StoryMode } from './story/story';
 import { ALL_LOTTO_DART_NODES, LOTTO_DART_NODE_BY_ID, getLottoDartEdges } from './story/lottoSkills';
 import { audio } from './shared/audio';
+import { settings } from './shared/settings';
 import type { LevelId, SkillNode } from './shared/types';
 
 // ===== 关卡选择 + HUD + 拓扑技能树 UI =====
@@ -54,6 +60,7 @@ export function buildApp(state: GameState): Game {
         <button class="btn-rotate" id="rotateBtn" title="旋转画面（横/竖屏切换）" aria-pressed="false">🔄</button>
         <button class="btn-rotate btn-mute" id="muteBtn" title="开关音效" aria-pressed="true">🔊</button>
         <button class="btn-lotto" id="lottoTreeBtn" title="彩票技能树" hidden>🎫</button>
+        <button class="btn-rotate" id="settingsBtn" title="设置">⚙️</button>
       </div>
     </div>
 
@@ -62,6 +69,8 @@ export function buildApp(state: GameState): Game {
       <div class="screen screen-select active" id="screenSelect">
         <div class="select-title">选择关卡 <span id="angelBadge" hidden>👼🏆</span></div>
         <div class="select-sub">点选一个关卡进入</div>
+        <button class="achv-btn" id="openAchv" title="成就">🏆 成就</button>
+        <button class="achv-btn" id="openMeta" title="强化">🛒 强化</button>
         <div class="level-cards">
           <button class="level-card" id="cardDart">
             <span class="lv-icon">🎯</span>
@@ -87,6 +96,21 @@ export function buildApp(state: GameState): Game {
             <span class="lv-name">剧情模式</span>
             <span class="lv-desc">跟随故事引导 · 探索游戏世界</span>
           </button>
+          <button class="level-card" id="cardRps">
+            <span class="lv-icon">✊</span>
+            <span class="lv-name">锤剪布</span>
+            <span class="lv-desc">读心格斗 · 读懂暗示克敌</span>
+          </button>
+          <button class="level-card daily" id="cardDaily">
+            <span class="lv-icon">🎁</span>
+            <span class="lv-name">每日挑战</span>
+            <span class="lv-desc" id="dailyDesc">每天一次 · 随机修饰词挑战</span>
+          </button>
+          <button class="level-card" id="cardShooter">
+            <span class="lv-icon">🚀</span>
+            <span class="lv-name">弹幕射击</span>
+            <span class="lv-desc">拖动战机 · 自动开火躲弹</span>
+          </button>
         </div>
         <div class="select-footer" id="selectFooter" hidden>
           <span class="final-angel">👼</span>
@@ -103,6 +127,27 @@ export function buildApp(state: GameState): Game {
       <!-- 打怪关卡 -->
       <div class="screen screen-battle" id="screenBattle">
         <canvas id="battleCanvas"></canvas>
+        <button class="ult-btn" id="battleUlt" disabled title="怒气满后释放旋风斩"><span class="ult-ico">💢</span><span class="ult-lbl">旋风斩</span></button>
+        <div class="wave-pick" id="wavePick" hidden>
+          <div class="wave-pick-title">🔥 波次奖励 · 3 选 1</div>
+          <div class="wave-pick-choices" id="wavePickChoices"></div>
+        </div>
+      </div>
+
+      <!-- 锤剪布关卡：画布 + 出招按钮 -->
+      <div class="screen screen-rps" id="screenRps">
+        <canvas id="rpsCanvas"></canvas>
+        <button class="ult-btn ult-rps" id="rpsUlt" disabled title="怒气满后释放必胜一击"><span class="ult-ico">⭐</span><span class="ult-lbl">必胜一击</span></button>
+        <div class="rps-controls" id="rpsControls">
+          <button class="rps-btn" data-move="rock">🔨<span>锤</span></button>
+          <button class="rps-btn" data-move="scissors">✂️<span>剪</span></button>
+          <button class="rps-btn" data-move="paper">📜<span>布</span></button>
+        </div>
+      </div>
+
+      <!-- 弹幕射击关卡 -->
+      <div class="screen screen-shooter" id="screenShooter">
+        <canvas id="shooterCanvas"></canvas>
       </div>
 
       <!-- 彩票关卡（Lottery 类挂这里） -->
@@ -147,6 +192,41 @@ export function buildApp(state: GameState): Game {
         </div>
       </div>
     </div>
+
+    <!-- 成就面板 -->
+    <div class="modal" id="achvModal" aria-hidden="true">
+      <div class="modal-card achv-card">
+        <div class="modal-head">
+          <div class="modal-title">🏆 成就</div>
+          <div class="modal-progress" id="achvProgress">0/0</div>
+          <button class="btn-close" id="closeAchv">✕</button>
+        </div>
+        <div class="achv-list" id="achvList"></div>
+      </div>
+    </div>
+
+    <!-- 设置面板 -->
+    <div class="modal" id="settingsModal" aria-hidden="true">
+      <div class="modal-card settings-card">
+        <div class="modal-head">
+          <div class="modal-title">⚙️ 设置</div>
+          <button class="btn-close" id="closeSettings">✕</button>
+        </div>
+        <div class="settings-body" id="settingsBody"></div>
+      </div>
+    </div>
+
+    <!-- 强化商店（meta） -->
+    <div class="modal" id="metaModal" aria-hidden="true">
+      <div class="modal-card meta-card">
+        <div class="modal-head">
+          <div class="modal-title">🛒 强化商店</div>
+          <div class="modal-coins" id="metaCoins">🪙 0</div>
+          <button class="btn-close" id="closeMeta">✕</button>
+        </div>
+        <div class="meta-hint">跨关永久强化 · 金币的长期出口</div>
+        <div class="meta-list" id="metaList"></div>
+      </div>
     </div>
   `;
 
@@ -205,6 +285,8 @@ export function buildApp(state: GameState): Game {
   const screenDart = app.querySelector<HTMLDivElement>('#screenDart')!;
   const screenLotto = app.querySelector<HTMLDivElement>('#screenLotto')!;
   const screenBattle = app.querySelector<HTMLDivElement>('#screenBattle')!;
+  const screenRps = app.querySelector<HTMLDivElement>('#screenRps')!;
+  const screenShooter = app.querySelector<HTMLDivElement>('#screenShooter')!;
   const homeBtn = app.querySelector<HTMLButtonElement>('#homeBtn')!;
   const skillBtn = app.querySelector<HTMLButtonElement>('#skillBtn')!;
 
@@ -259,7 +341,87 @@ export function buildApp(state: GameState): Game {
 
   // ---- 打怪（页面，挂 #screenBattle 的画布）----
   const battleCanvas = app.querySelector<HTMLCanvasElement>('#battleCanvas')!;
-  const battle = new Battle(battleCanvas, state, { onCoins: () => refreshCoins() });
+  const battleUltBtn = app.querySelector<HTMLButtonElement>('#battleUlt')!;
+  const wavePick = app.querySelector<HTMLDivElement>('#wavePick')!;
+  const wavePickChoices = app.querySelector<HTMLDivElement>('#wavePickChoices')!;
+  const battle = new Battle(battleCanvas, state, {
+    onCoins: () => refreshCoins(),
+    onUlt: (ready) => {
+      battleUltBtn.disabled = !ready;
+      battleUltBtn.classList.toggle('ready', ready);
+    },
+    onWavePick: (choices, onChoose) => {
+      wavePickChoices.innerHTML = '';
+      for (const b of choices) {
+        const btn = document.createElement('button');
+        btn.className = 'wave-pick-btn';
+        btn.innerHTML = `<span class="wp-ico">${b.icon}</span><span class="wp-name">${b.name}</span>`;
+        btn.addEventListener('click', () => {
+          onChoose(b);
+          wavePick.hidden = true;
+        });
+        wavePickChoices.appendChild(btn);
+      }
+      wavePick.hidden = false;
+    },
+    onDailyEnd: (score) => {
+      // 每日挑战死亡结算：发奖 + 标记今日已做 + 返回主页
+      const bonus = state.claimDaily(score);
+      showToast(`🎁 每日挑战 · 击杀 ${score} · +🪙${bonus}`);
+      refreshLottoLock();
+      refreshDaily();
+      go('select');
+    },
+  });
+  battleUltBtn.addEventListener('click', () => battle.ultimate());
+
+  // ---- 每日挑战 ----
+  /** 按今日日期确定性选一个修饰词（同一天所有人相同） */
+  function dailyModifier(): Modifier {
+    const s = todayStr();
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return MODIFIERS[h % MODIFIERS.length];
+  }
+  const dailyDesc = app.querySelector<HTMLSpanElement>('#dailyDesc')!;
+  function refreshDaily(): void {
+    const mod = dailyModifier();
+    const avail = state.dailyAvailable();
+    const card = app.querySelector<HTMLButtonElement>('#cardDaily')!;
+    card.classList.toggle('locked', !avail);
+    dailyDesc.textContent = avail
+      ? `今日: ${mod.icon}${mod.name} · 按击杀领奖`
+      : '✅ 今日已完成 · 明日刷新';
+  }
+  app.querySelector<HTMLButtonElement>('#cardDaily')!.addEventListener('click', () => {
+    if (!state.dailyAvailable()) {
+      showToast('✅ 今天的每日挑战已完成，明日再来！');
+      return;
+    }
+    go('battle');
+    battle.startDaily(dailyModifier());
+  });
+  refreshDaily();
+
+  // ---- 锤剪布（页面，画布 + 三按钮）----
+  const rpsCanvas = app.querySelector<HTMLCanvasElement>('#rpsCanvas')!;
+  const rpsUltBtn = app.querySelector<HTMLButtonElement>('#rpsUlt')!;
+  const rps = new RpsBattle(rpsCanvas, state, {
+    onCoins: () => refreshCoins(),
+    onUlt: (ready) => {
+      rpsUltBtn.disabled = !ready;
+      rpsUltBtn.classList.toggle('ready', ready);
+    },
+  });
+  rpsUltBtn.addEventListener('click', () => rps.ultimate());
+  type RpsMove = 'rock' | 'paper' | 'scissors';
+  for (const btn of app.querySelectorAll<HTMLButtonElement>('#rpsControls .rps-btn')) {
+    btn.addEventListener('click', () => rps.choose(btn.dataset.move as RpsMove));
+  }
+
+  // ---- 弹幕射击（页面，画布）----
+  const shooterCanvas = app.querySelector<HTMLCanvasElement>('#shooterCanvas')!;
+  const shooter = new Shooter(shooterCanvas, state, { onCoins: () => refreshCoins() });
 
   // ---- 关卡解锁态：派生自 state.totalEarned，无需持久化。----
   const cardLotto = app.querySelector<HTMLButtonElement>('#cardLotto')!;
@@ -291,8 +453,8 @@ export function buildApp(state: GameState): Game {
   }
 
   // ---- 屏幕路由 ----
-  let current: 'select' | 'dart' | 'lotto' | 'battle' | 'story' = 'select';
-  function go(name: 'select' | 'dart' | 'lotto' | 'battle' | 'story'): void {
+  let current: 'select' | 'dart' | 'lotto' | 'battle' | 'story' | 'rps' | 'shooter' = 'select';
+  function go(name: 'select' | 'dart' | 'lotto' | 'battle' | 'story' | 'rps' | 'shooter'): void {
     if (name === current) return;
     const prev = current;
     current = name;
@@ -301,6 +463,8 @@ export function buildApp(state: GameState): Game {
     screenLotto.classList.toggle('active', name === 'lotto');
     screenBattle.classList.toggle('active', name === 'battle');
     screenStory.classList.toggle('active', name === 'story');
+    screenRps.classList.toggle('active', name === 'rps');
+    screenShooter.classList.toggle('active', name === 'shooter');
     // 飞镖循环：进入才跑，离开即停（省 CPU、避免在隐藏画布上空投）
     if (prev === 'dart') game.stop();
     if (name === 'dart') {
@@ -317,9 +481,23 @@ export function buildApp(state: GameState): Game {
     // 剧情：进入渲染，离开清理
     if (prev === 'story') story.leave();
     if (name === 'story') story.enter();
+    // 锤剪布循环：同上
+    if (prev === 'rps') rps.stop();
+    if (name === 'rps') {
+      window.dispatchEvent(new Event('resize'));
+      rps.start();
+    }
+    // 弹幕射击循环：同上
+    if (prev === 'shooter') shooter.stop();
+    if (name === 'shooter') {
+      window.dispatchEvent(new Event('resize'));
+      shooter.start();
+    }
     // 彩票页面：进入刷新，离开静默结算
     if (prev === 'lotto') lottery.leave();
     if (name === 'lotto') lottery.enter();
+    // 背景音乐：随关卡切换曲风（选择页=菜单曲）
+    audio.setMusicMood(name === 'select' ? 'menu' : (name as 'dart' | 'lotto' | 'battle' | 'rps' | 'shooter'));
     // HUD：🏠/技能按钮仅在关卡页显示；score/combo 仅飞镖页
     homeBtn.hidden = name === 'select';
     skillBtn.hidden = name === 'select' || name === 'story';
@@ -331,6 +509,8 @@ export function buildApp(state: GameState): Game {
   app.querySelector<HTMLButtonElement>('#cardDart')!.addEventListener('click', () => go('dart'));
   app.querySelector<HTMLButtonElement>('#cardBattle')!.addEventListener('click', () => go('battle'));
   app.querySelector<HTMLButtonElement>('#cardStory')!.addEventListener('click', () => go('story'));
+  app.querySelector<HTMLButtonElement>('#cardRps')!.addEventListener('click', () => go('rps'));
+  app.querySelector<HTMLButtonElement>('#cardShooter')!.addEventListener('click', () => go('shooter'));
   const lottoTreeBtn = app.querySelector<HTMLButtonElement>('#lottoTreeBtn')!;
   lottoTreeBtn.addEventListener('click', () => {
     treeTab = 'ticket';
@@ -350,13 +530,14 @@ export function buildApp(state: GameState): Game {
   // 彩票树按钮仅在第三段剧情后显示
   const refreshLottoTreeBtn = () => { lottoTreeBtn.hidden = !state.lottoTreeUnlocked; };
   refreshLottoTreeBtn();
+  // 先声明 selectFooter，避免 refreshAngelBadge 中使用时陷入暂时性死区
+  const selectFooter = app.querySelector<HTMLDivElement>('#selectFooter')!;
   const angelBadge = app.querySelector<HTMLSpanElement>('#angelBadge')!;
   const refreshAngelBadge = () => {
     angelBadge.hidden = !state.angelAchievement;
     selectFooter.hidden = !state.angelAchievement;
   };
   refreshAngelBadge();
-  const selectFooter = app.querySelector<HTMLDivElement>('#selectFooter')!;
   cardLotto.addEventListener('click', () => {
     if (!state.lottoUnlocked()) {
       showToast(
@@ -376,9 +557,113 @@ export function buildApp(state: GameState): Game {
   function refreshCoins(): void {
     refreshLottoTreeBtn();
     updateCoins();
+    checkAchievements();
     lottery.syncCoins();
     refreshLottoLock();
   }
+
+  // ============ 成就系统 ============
+  const achvModal = app.querySelector<HTMLDivElement>('#achvModal')!;
+  const achvList = app.querySelector<HTMLDivElement>('#achvList')!;
+  const achvProgress = app.querySelector<HTMLSpanElement>('#achvProgress')!;
+  /** 扫描达成但未领取的成就 → 解锁、发奖、toast。在每次金币变动时调用。 */
+  function checkAchievements(): void {
+    const fresh = newlyCompleted(state.achv, state.achvDone);
+    if (!fresh.length) return;
+    for (const a of fresh) {
+      state.achvDone.add(a.id);
+      state.earn(a.reward);
+      showToast(`🏆 ${a.name} · +🪙${a.reward}`);
+      audio.sfx('unlock');
+    }
+    state.save();
+    updateCoins();
+    if (achvModal.classList.contains('open')) renderAchv();
+  }
+  function renderAchv(): void {
+    const done = state.achvDone;
+    achvProgress.textContent = `🏆 ${done.size}/${ACHIEVEMENTS.length}`;
+    achvList.innerHTML = ACHIEVEMENTS.map((a) => {
+      const owned = done.has(a.id);
+      const cur = state.achv[a.stat] || 0;
+      return `<div class="achv-row${owned ? ' done' : ''}">
+        <span class="achv-ico">${owned ? a.icon : '🔒'}</span>
+        <span class="achv-name">${a.name}</span>
+        <span class="achv-desc">${a.desc} <em>(${Math.min(cur, a.target)}/${a.target})</em></span>
+        <span class="achv-reward">🪙${a.reward}</span>
+      </div>`;
+    }).join('');
+  }
+  app.querySelector<HTMLButtonElement>('#openAchv')!.addEventListener('click', () => {
+    renderAchv();
+    achvModal.classList.add('open');
+    achvModal.setAttribute('aria-hidden', 'false');
+  });
+  const closeAchv = () => {
+    achvModal.classList.remove('open');
+    achvModal.setAttribute('aria-hidden', 'true');
+  };
+  app.querySelector<HTMLButtonElement>('#closeAchv')!.addEventListener('click', closeAchv);
+  achvModal.addEventListener('click', (e) => {
+    if (e.target === achvModal) closeAchv();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && achvModal.classList.contains('open')) closeAchv();
+  });
+
+  // ============ 强化商店（meta）============
+  const metaModal = app.querySelector<HTMLDivElement>('#metaModal')!;
+  const metaList = app.querySelector<HTMLDivElement>('#metaList')!;
+  const metaCoins = app.querySelector<HTMLSpanElement>('#metaCoins')!;
+  function renderMeta(): void {
+    metaCoins.textContent = `🪙 ${state.coins}`;
+    metaList.innerHTML = META_DEFS.map((d) => {
+      const tier = state.meta[d.id];
+      const maxed = tier >= d.maxTier;
+      const cost = maxed ? 0 : d.costs[tier];
+      const afford = !maxed && state.coins >= cost;
+      const pips = Array.from({ length: d.maxTier }, (_, i) =>
+        i < tier ? '◆' : '◇',
+      ).join(' ');
+      return `<div class="meta-row">
+        <span class="meta-ico">${d.icon}</span>
+        <div class="meta-info">
+          <span class="meta-name">${d.name} <em>${pips}</em></span>
+          <span class="meta-desc">${maxed ? d.desc(tier - 1) + ' · 已满级' : d.desc(tier) + '（下一档）'}</span>
+        </div>
+        <button class="meta-buy${maxed ? ' maxed' : afford ? '' : ' poor'}" data-id="${d.id}" ${maxed || !afford ? 'disabled' : ''}>
+          ${maxed ? 'MAX' : `🪙${cost}`}
+        </button>
+      </div>`;
+    }).join('');
+    for (const btn of metaList.querySelectorAll<HTMLButtonElement>('.meta-buy')) {
+      if (btn.disabled) continue;
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id as keyof typeof state.meta;
+        if (state.buyMeta(id)) {
+          audio.sfx('skill');
+          updateCoins();
+          renderMeta();
+        }
+      });
+    }
+  }
+  app.querySelector<HTMLButtonElement>('#openMeta')!.addEventListener('click', () => {
+    renderMeta();
+    metaModal.classList.add('open');
+    metaModal.setAttribute('aria-hidden', 'false');
+  });
+  const closeMeta = () => {
+    metaModal.classList.remove('open');
+    metaModal.setAttribute('aria-hidden', 'true');
+  };
+  app.querySelector<HTMLButtonElement>('#closeMeta')!.addEventListener('click', closeMeta);
+  metaModal.addEventListener('click', (e) => {
+    if (e.target === metaModal) closeMeta();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && metaModal.classList.contains('open')) closeMeta();
+  });
 
   // ============ 技能弹窗（通用，按关卡切换树）============
   const dartSpec: TreeSpec = {
@@ -449,6 +734,38 @@ export function buildApp(state: GameState): Game {
   };
 
   let treeTab: 'dart' | 'ticket' = 'dart';
+  const rpsSpec: TreeSpec = {
+    level: 'rps',
+    title: '✊ 锤剪布技能树',
+    nodes: ALL_RPS_NODES,
+    nodeById: RPS_NODE_BY_ID,
+    edges: getRpsEdges(),
+    branches: {
+      atk: { name: '攻', color: '#ea4754' },
+      mind: { name: '读', color: '#7df9ff' },
+      guard: { name: '韧', color: '#5fce86' },
+    },
+    owned: (id) => state.owned('rps', id),
+    prereqMet: (id) => state.prereqMet('rps', id),
+    canBuy: (id) => state.canBuy('rps', id),
+    buy: (id) => state.buy('rps', id),
+  };
+  const shooterSpec: TreeSpec = {
+    level: 'shooter',
+    title: '🚀 射击技能树',
+    nodes: ALL_SHOOTER_NODES,
+    nodeById: SHOOTER_NODE_BY_ID,
+    edges: getShooterEdges(),
+    branches: {
+      fire: { name: '射', color: '#ea4754' },
+      dodge: { name: '动', color: '#7df9ff' },
+      hull: { name: '防', color: '#5fce86' },
+    },
+    owned: (id) => state.owned('shooter', id),
+    prereqMet: (id) => state.prereqMet('shooter', id),
+    canBuy: (id) => state.canBuy('shooter', id),
+    buy: (id) => state.buy('shooter', id),
+  };
 
   const modal = app.querySelector<HTMLDivElement>('#skillModal')!;
   const closeBtn = app.querySelector<HTMLButtonElement>('#closeSkill')!;
@@ -495,7 +812,16 @@ export function buildApp(state: GameState): Game {
   function openSkill(level: 'select' | LevelId | 'story'): void {
     if (level === 'select' || level === 'story') return;
     treeTab = 'dart';
-    spec = level === 'lotto' ? lottoSpec : level === 'battle' ? battleSpec : dartSpec;
+    spec =
+      level === 'lotto'
+        ? lottoSpec
+        : level === 'battle'
+          ? battleSpec
+          : level === 'rps'
+            ? rpsSpec
+            : level === 'shooter'
+              ? shooterSpec
+              : dartSpec;
     tabTicket.hidden = !state.lottoTreeUnlocked;
     treeTabs.hidden = (level !== 'dart');
     tabDart.classList.toggle('active', true);
@@ -505,13 +831,29 @@ export function buildApp(state: GameState): Game {
     renderLegend();
     modal.classList.add('open');
     modal.setAttribute('aria-hidden', 'false');
+    // 开技能弹窗时暂停当前关卡的实时循环，避免被打（飞镖/打怪/锤剪布都暂停）
+    pauseCurrent();
     renderTree();
     updateCoins();
   }
   const closeModal = () => {
     modal.classList.remove('open');
     modal.setAttribute('aria-hidden', 'true');
+    resumeCurrent();
   };
+  // 暂停 / 恢复当前屏幕的实时关卡（开/关技能弹窗用）
+  function pauseCurrent(): void {
+    if (current === 'dart') game.stop();
+    else if (current === 'battle') battle.pause();
+    else if (current === 'rps') rps.pause();
+    else if (current === 'shooter') shooter.pause();
+  }
+  function resumeCurrent(): void {
+    if (current === 'dart') game.start();
+    else if (current === 'battle') battle.start();
+    else if (current === 'rps') rps.start();
+    else if (current === 'shooter') shooter.start();
+  }
   closeBtn.addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => {
     if (e.target === modal) closeModal();
@@ -526,6 +868,8 @@ export function buildApp(state: GameState): Game {
       state.reset();
       if (current === 'dart') game.syncAfterBuy();
       if (current === 'battle') battle.syncAfterBuy();
+      if (current === 'rps') rps.syncAfterBuy();
+      if (current === 'shooter') shooter.syncAfterBuy();
       selectedId = null;
       updateCoins();
       updateScore();
@@ -544,9 +888,11 @@ export function buildApp(state: GameState): Game {
       audio.sfx('skill');
       if (spec.level === 'dart') game.syncAfterBuy();
       else if (spec.level === 'battle') battle.syncAfterBuy();
+      else if (spec.level === 'rps') rps.syncAfterBuy();
+      else if (spec.level === 'shooter') shooter.syncAfterBuy();
       // X1 购买后触发第五段剧情
       if (selectedId === 'X1') { closeModal(); story.startChapter(5); go('story'); return; }
-      refreshCoins();
+      refreshCoins(); // 统一走 refreshCoins（含 lottery.syncCoins / refreshLottoLock）
       justBoughtId = selectedId; // 标记刚解锁 → renderTree 画扩散光圈
       renderTree();
       renderDetail();
@@ -990,7 +1336,74 @@ export function buildApp(state: GameState): Game {
     syncMute();
     // 切到开启时立即给一声反馈（同时也是手势，触发 AudioContext resume）
     if (audio.isEnabled()) audio.sfx('coin');
+    audio.unlockMusic();
   });
+
+  // ----- 设置面板 + 背景音乐 -----
+  // 把设置同步进音频引擎
+  const applyAudioSettings = () => {
+    const s = settings.get();
+    audio.setMusicEnabled(s.music);
+    audio.setMusicVolume(s.musicVol);
+    audio.setHapticsEnabled(s.haptics);
+  };
+  applyAudioSettings();
+  audio.setMusicMood('menu');
+
+  const settingsModal = app.querySelector<HTMLDivElement>('#settingsModal')!;
+  const settingsBody = app.querySelector<HTMLDivElement>('#settingsBody')!;
+  const renderSettings = () => {
+    const s = settings.get();
+    settingsBody.innerHTML = `
+      <label class="set-row"><span>🎵 背景音乐</span><input type="checkbox" id="setMusic" ${s.music ? 'checked' : ''}></label>
+      <label class="set-row"><span>🔉 音量</span><input type="range" id="setVol" min="0" max="1" step="0.05" value="${s.musicVol}"></label>
+      <label class="set-row"><span>📳 振动反馈</span><input type="checkbox" id="setHaptics" ${s.haptics ? 'checked' : ''}></label>
+      <label class="set-row"><span>✨ 减少动效（无障碍）</span><input type="checkbox" id="setReduce" ${s.reduceMotion ? 'checked' : ''}></label>
+      <div class="set-hint">减少动效：关闭震屏/闪光，缓解眩晕。音效开关见右上 🔊。</div>`;
+    const set = (id: string) => app.querySelector<HTMLInputElement>(id)!;
+    set('#setMusic').addEventListener('change', (e) => {
+      settings.update({ music: (e.target as HTMLInputElement).checked });
+      applyAudioSettings();
+      audio.unlockMusic();
+    });
+    set('#setVol').addEventListener('input', (e) => {
+      settings.update({ musicVol: parseFloat((e.target as HTMLInputElement).value) });
+      applyAudioSettings();
+    });
+    set('#setHaptics').addEventListener('change', (e) => {
+      settings.update({ haptics: (e.target as HTMLInputElement).checked });
+      applyAudioSettings();
+    });
+    set('#setReduce').addEventListener('change', (e) => {
+      settings.update({ reduceMotion: (e.target as HTMLInputElement).checked });
+    });
+  };
+  const openSettings = () => {
+    renderSettings();
+    settingsModal.classList.add('open');
+    settingsModal.setAttribute('aria-hidden', 'false');
+    pauseCurrent();
+  };
+  const closeSettings = () => {
+    settingsModal.classList.remove('open');
+    settingsModal.setAttribute('aria-hidden', 'true');
+    resumeCurrent();
+  };
+  app.querySelector<HTMLButtonElement>('#settingsBtn')!.addEventListener('click', openSettings);
+  app.querySelector<HTMLButtonElement>('#closeSettings')!.addEventListener('click', closeSettings);
+  settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) closeSettings();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && settingsModal.classList.contains('open')) closeSettings();
+  });
+
+  // 首次用户手势后启动 BGM 引擎（AudioContext 需手势解锁）
+  const unlockOnce = () => {
+    audio.unlockMusic();
+    window.removeEventListener('pointerdown', unlockOnce);
+  };
+  window.addEventListener('pointerdown', unlockOnce);
 
   // 初始：停在关卡选择主页（飞镖循环不启动，进入飞镖关卡才 start）。
   refreshCoins();

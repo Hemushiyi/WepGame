@@ -862,8 +862,10 @@ export class Lottery {
 
     // 音效：头奖 / 各玩法中奖 sting / 未中（+幸运值上升提示）
     if (prize > 0) {
-      if (isJackpot) audio.sfx('jackpot', { semi: tier.semi });
-      else audio.sfx(VARIANTS[tier.variant].winSfx, { semi: tier.semi });
+      if (isJackpot) {
+        audio.sfx('jackpot', { semi: tier.semi });
+        this.state.incAchv('jackpots'); // 成就：彩票头奖
+      } else audio.sfx(VARIANTS[tier.variant].winSfx, { semi: tier.semi });
     } else {
       audio.sfx('lottoMiss');
       if (this.pityFor(tier) > pityBefore) audio.sfx('luck');
