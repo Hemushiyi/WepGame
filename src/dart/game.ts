@@ -1,4 +1,4 @@
-import type { Dart, FloatText, Vec2 } from '../shared/types';
+import type { Dart, DropItem, FloatingItem, FloatText, Vec2 } from '../shared/types';
 import { GameState } from '../shared/state';
 import {
   VH,
@@ -23,9 +23,11 @@ import {
 } from './render/background';
 import { drawBoard } from './render/board';
 import { drawCharacter, drawPet } from './render/character';
-import { drawAim, drawDart, drawFloats, drawHint } from './render/fx';
+import { drawAim, drawDart, drawFloatingItem, drawFloats, drawHint, drawLightning, drawLottoDrop, drawRobot } from './render/fx';
 import { juice } from './render/juice';
 import { audio } from '../shared/audio';
+
+import { robotSettle, showScratchOverlay } from '../story/scratch';
 
 // ===== 主游戏：循环 / 投掷物理 / 计分 / 宠物（渲染委托给 render/* 模块）=====
 
@@ -47,7 +49,9 @@ interface Callbacks {
   onCombo: (combo: number, multiplier: number) => void;
   /** 新手引导里程碑（首次进入 / 首次中心命中 / 首次有风时投掷）。
    *  每会话仅各自触发一次；是否真正弹 toast 由 UI 层按持久化状态决定。 */
-  onOnboard?: (kind: 'entry' | 'bull' | 'wind') => void;
+  onOnboard?: (kind: 'entry' | 'bull' | 'wind' | 'lottoDrop') => void;
+  /** 掉落彩票点击后触发剧情对话 */
+  onStoryTrigger?: (chapter?: number) => void;
 }
 
 export class Game {
@@ -78,10 +82,20 @@ export class Game {
   private obEntry = false;
   private obBull = false;
   private obWind = false;
+  private obScore1000 = false;
+  private obTicketChapter = false;
+  private ticketsScratched = 0;
+  private ticketDropEnabled = false; // 首次剧情票点击后才开始掉落
 
   // 实体
   private darts: Dart[] = [];
   private floats: FloatText[] = [];
+  private floatingItems: FloatingItem[] = [];
+  private dropItems: DropItem[] = [];
+  private lightningBolts: { x1: number; y1: number; x2: number; y2: number; life: number }[] = [];
+  private robots: { pos: Vec2; targetX: number; ticket: DropItem; phase: 'out' | 'back' }[] = [];
+  private readonly ROBOT_SPEED = 80;
+  private fairyTimer = 6000;
 
   // 时间
   private time = 0;
@@ -180,6 +194,47 @@ export class Game {
   // ---------- 输入 ----------
   private onPointerDown = (e: PointerEvent): void => {
     e.preventDefault();
+    // 刮刮乐弹窗打开时不处理投掷
+    if (document.getElementById('scratchOverlay')) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (this.canvas.width / rect.width);
+    const cy = (e.clientY - rect.top) * (this.canvas.height / rect.height);
+    const s = this.state.stats();
+    for (let i = this.dropItems.length - 1; i >= 0; i--) {
+      const d = this.dropItems[i];
+      if (d.landed && Math.hypot(cx - d.pos.x, cy - d.pos.y) < 30) {
+        const wasStory = d.isStoryDrop;
+        this.dropItems.splice(i, 1);
+        this.robots = this.robots.filter((r) => r.ticket !== d);
+        if (wasStory) {
+          this.ticketDropEnabled = true; // 剧情后解锁彩票掉落
+          this.cb.onStoryTrigger?.(1);
+        } else {
+          this.ticketsScratched++;
+          if (d.angel || d.demon) {
+            const isAngel = !!d.angel;
+            showScratchOverlay(
+              (n) => { this.state.earn(n); this.cb.onCoins(this.state.coins); },
+              () => { this.cb.onStoryTrigger?.(isAngel ? 3 : 4); },
+              { angel: d.angel, demon: d.demon, valueMul: s.ticketValue, autoClose: true },
+            );
+          } else {
+            const tierLuck = (d.tier ?? 0) === 0 ? s.ticketLuck : (d.tier ?? 0) === 1 ? s.silverLuck : (d.tier ?? 0) === 2 ? s.goldLuck : s.diamondLuck;
+            showScratchOverlay(
+              (n) => { this.state.earn(n); this.cb.onCoins(this.state.coins); },
+              undefined,
+              { luck: tierLuck, valueMul: s.ticketValue, tier: d.tier ?? 0 },
+            );
+          }
+          // 累计 10 张 → 第三段剧情
+          if (this.ticketsScratched >= 10 && !this.obTicketChapter) {
+            this.obTicketChapter = true;
+            this.cb.onStoryTrigger?.(2);
+          }
+        }
+        return;
+      }
+    }
     this.tryThrow(false);
   };
 
@@ -224,11 +279,17 @@ export class Game {
 
     this.spawnDart(tx, ty, fromPet, petIndex);
 
-    // 双发：第二支相对第一支抖动（聚集，体现"一次操作两支镖"）
+    // 双发：第二支相对第一支抖动
     if (!fromPet && Math.random() < stats.doubleShotChance) {
       const tx2 = tx + (Math.random() * 2 - 1) * DOUBLE_SHOT_X_JITTER;
       const ty2 = ty + (Math.random() * 2 - 1) * 12;
       this.spawnDart(tx2, ty2, false, petIndex, 0.06);
+    }
+    // 连投：概率触发第三支飞镖（延迟稍久，独立于双发）
+    if (!fromPet && Math.random() < stats.chainThrow) {
+      const tx3 = tx + (Math.random() * 2 - 1) * 25;
+      const ty3 = ty + (Math.random() * 2 - 1) * 8;
+      this.spawnDart(tx3, ty3, false, petIndex, 0.12);
     }
     return true;
   }
@@ -244,6 +305,7 @@ export class Game {
     const start = fromPet ? this.petHand(petIndex) : CHAR_HAND;
     const dist = Math.abs(targetX - start.x);
     const duration = (dist / stats.dartSpeed) * 1000 + delay * 1000;
+    const isGolden = !fromPet && Math.random() < stats.goldenDart;
     this.darts.push({
       pos: { ...start },
       sx: start.x,
@@ -253,6 +315,7 @@ export class Game {
       speed: Math.max(160, duration),
       fromPet,
       hit: false,
+      golden: isGolden,
     });
   }
 
@@ -336,8 +399,45 @@ export class Game {
       d.pos.x = this.lerp(d.sx, d.target.x, t);
       const baseY = this.lerp(d.startY, d.target.y, t);
       d.pos.y = baseY - ARC * 4 * t * (1 - t);
+      // 闪电命中：飞行到半程时概率触发，修正飞镖自动靶心
+      if (!d.fromPet && !d.zapped && t >= 0.4 && t <= 0.55 && Math.random() < stats.lightningStrike) {
+        d.zapped = true;
+        d.target = { x: BOARD_CENTER.x, y: BOARD_CENTER.y };
+        const sx = d.sx + (d.target.x - d.sx) * t;
+        const sy = d.startY + (d.target.y - d.startY) * t - ARC * 4 * t * (1 - t);
+        this.lightningBolts.push({ x1: BOARD_CENTER.x + (Math.random()*2-1)*40, y1: 0, x2: BOARD_CENTER.x, y2: BOARD_CENTER.y, life: 300 });
+        juice.shake(5);
+        juice.burst(d.target.x, d.target.y, '#7df9ff', 15);
+      }
       if (t >= 1 && !d.hit) {
         d.hit = true;
+        // 检查是否击中漂浮飞行物
+        for (const f of this.floatingItems) {
+          if (Math.hypot(d.target.x - f.pos.x, d.target.y - f.pos.y) < 6 + f.r) {
+            this.floatingItems = this.floatingItems.filter((x) => x !== f);
+            if (f.kind === 'demon') {
+              // 恶魔：爆出随机票
+              const s2 = this.state.stats();
+              const shards = 1 + Math.floor(Math.random() * (5 + s2.demonShards));
+              for (let k = 0; k < shards; k++) {
+                let t = 0;
+                if (Math.random() < s2.demonUpgrade) t = Math.min(2, t + 1 + Math.floor(Math.random() * 2));
+                else if (s2.silverUnlock > 0 && Math.random() < 0.3) t = 1;
+                else if (s2.goldUnlock > 0 && Math.random() < 0.1) t = 2;
+                this.spawnLottoDrop(false, t);
+              }
+              juice.burst(f.pos.x, f.pos.y, '#ea4754', 16);
+              juice.shake(4);
+              this.floats.push({ pos: { ...f.pos }, text: `👹+${shards}`, color: '#ea4754', life: 1000, vy: -30 });
+            } else {
+              const reward = f.kind === 'fairy' ? 80 : 30 + Math.floor(Math.random() * 71);
+              this.state.earn(reward);
+              juice.burst(f.pos.x, f.pos.y, f.kind === 'fairy' ? '#c061e0' : '#ffd45e', 10);
+              this.floats.push({ pos: { ...f.pos }, text: `+${reward}`, color: '#ffd45e', life: 800, vy: -28 });
+            }
+            break;
+          }
+        }
         this.resolveHit(d);
       }
     }
@@ -352,6 +452,95 @@ export class Game {
     }
     this.floats = this.floats.filter((f) => f.life > 0);
 
+    // 掉落物品更新（下落 → 触地 → 机器人自动刮或等待点击）
+    const s2 = this.state.stats();
+    for (const d of this.dropItems) {
+      d.life -= dt;
+      if (!d.landed) {
+        d.pos.y += d.vy * dts;
+        if (d.pos.y >= GROUND_Y) {
+          d.pos.y = GROUND_Y;
+          d.landed = true;
+          d.life = Infinity;
+          juice.burst(d.pos.x, d.pos.y, '#ffd45e', 8);
+          // 机器人自动拾取（非剧情票 + 有机器人技能 + 机器人空闲）
+          const maxRobots = (s2.robotCount || 0) + 1;
+          if (!d.isStoryDrop && !d.angel && !d.demon && s2.ticketRobot > 0 && this.robots.length < maxRobots) {
+            this.robots.push({ pos: { x: CHAR_FEET_X + 30 + this.robots.length * 16, y: GROUND_Y - 16 }, targetX: d.pos.x - 20, ticket: d, phase: 'out' });
+          }
+        }
+      }
+    }
+    // 机器人移动
+    for (const r of this.robots) {
+      const speed = this.ROBOT_SPEED * (1 + s2.ticketRobotSpeed + s2.robotSpeed);
+      const dx = r.targetX - r.pos.x;
+      const step = speed * dts;
+      if (Math.abs(dx) < step + 2) {
+        r.pos.x = r.targetX;
+        if (r.phase === 'out') {
+          const rt = r.ticket.tier ?? 0;
+        const rluck = rt === 0 ? s2.ticketLuck : rt === 1 ? s2.silverLuck : rt === 2 ? s2.goldLuck : s2.diamondLuck;
+        const prize = robotSettle({ luck: rluck + s2.ticketRobotLuck, valueMul: s2.ticketValue, jackpot: s2.ticketJackpot, tier: Math.min(s2.robotTier, rt) });
+          this.state.earn(prize);
+          this.cb.onCoins(this.state.coins);
+          this.floats.push({ pos: { ...r.ticket.pos }, text: `🤖+${prize}`, color: '#7df9ff', life: 900, vy: -28 });
+          this.ticketsScratched++;
+          if (this.ticketsScratched >= 10 && !this.obTicketChapter) { this.obTicketChapter = true; this.cb.onStoryTrigger?.(2); }
+          this.dropItems = this.dropItems.filter((x) => x !== r.ticket);
+          r.phase = 'back';
+          r.targetX = CHAR_FEET_X + 30;
+        }
+      } else {
+        r.pos.x += Math.sign(dx) * step;
+      }
+    }
+    this.robots = this.robots.filter((r) => r.phase !== 'back' || Math.abs(r.pos.x - r.targetX) > 2);
+
+    // 漂浮飞行物更新：精灵生成 + 运动 + 寿命
+    const fs = this.state.stats();
+    if (fs.fairySpawn > 0) {
+      this.fairyTimer -= dt;
+      if (this.fairyTimer <= 0) {
+        this.fairyTimer = 6000;
+        const existingFairies = this.floatingItems.filter((x) => x.kind === 'fairy').length;
+        if (existingFairies < fs.fairySpawn) {
+          const angle = Math.random() * Math.PI * 2;
+          const dist = fs.r2 + Math.random() * (fs.r4 - fs.r2); // 在盘面上飞行
+          this.floatingItems.push({
+            pos: { x: BOARD_CENTER.x + Math.cos(angle) * dist, y: BOARD_CENTER.y + Math.sin(angle) * dist },
+            vx: -Math.sin(angle) * 30, vy: Math.cos(angle) * 30,
+            life: 12000, kind: 'fairy', r: 12,
+          });
+        }
+      }
+    }
+    for (const f of this.floatingItems) {
+      f.life -= dt;
+      f.pos.x += f.vx * dt / 1000;
+      f.pos.y += f.vy * dt / 1000;
+      // 恶魔/精灵：轻微晃动
+      if (f.kind === 'demon') {
+        const wobble = Math.sin((this.time / 300) * Math.PI * 2) * 3;
+        f.pos.x += wobble * dt / 1000 * 2;
+      }
+      // 轨道修正（保持在盘面内部）
+      const dx = f.pos.x - BOARD_CENTER.x;
+      const dy = f.pos.y - BOARD_CENTER.y;
+      const dist = Math.hypot(dx, dy);
+      const targetR = (fs.r2 + fs.r4) / 2;
+      if (dist > 0.1) {
+        const pull = (dist - targetR) * 0.3;
+        f.vx -= (dx / dist) * pull * dt / 1000;
+        f.vy -= (dy / dist) * pull * dt / 1000;
+      }
+    }
+    this.floatingItems = this.floatingItems.filter((f) => f.life > 0);
+
+    // 闪电衰减
+    for (const b of this.lightningBolts) b.life -= dt;
+    this.lightningBolts = this.lightningBolts.filter((b) => b.life > 0);
+
     juice.update(dt);
   }
 
@@ -359,10 +548,73 @@ export class Game {
     return a + (b - a) * t;
   }
 
+  private spawnLottoDrop(isStory = false, forceTier = -1): void {
+    // 根据解锁状态决定彩票等级
+    let tier = 0; // 默认铜
+    if (forceTier >= 0) {
+      tier = forceTier;
+    } else {
+      const s = this.state.stats();
+      if (s.diamondUnlock > 0 && Math.random() < 0.08) tier = 3;     // 钻石8%
+      else if (s.goldUnlock > 0 && Math.random() < 0.15) tier = 2;
+      else if (s.silverUnlock > 0 && Math.random() < 0.30) tier = 1;
+    }
+    // 恶魔票：极低概率，直接烧毁召魔
+    if (!isStory && this.ticketDropEnabled && Math.random() < this.state.stats().demonDrop) {
+      this.spawnDemon();
+      return;
+    }
+    // 天使/恶魔终极大奖：5% 掉落
+    const s3 = this.state.stats();
+    if (!isStory && this.ticketDropEnabled && s3.angelUnlock > 0 && Math.random() < 0.05) {
+      const isAngel = Math.random() < 0.5;
+      this.dropItems.push({
+        pos: { x: BOARD_CENTER.x + (Math.random() * 2 - 1) * 30, y: BOARD_CENTER.y - 40 },
+        life: 9999, vy: 140, landed: false,
+        isStoryDrop: false, tier: -1,
+        angel: isAngel, demon: !isAngel,
+      } as DropItem);
+      return;
+    }
+    this.dropItems.push({
+      pos: { x: BOARD_CENTER.x + (Math.random() * 2 - 1) * 30, y: BOARD_CENTER.y - 40 },
+      life: 9999,
+      vy: 140,
+      landed: false,
+      isStoryDrop: isStory,
+      tier,
+    });
+  }
+
+  private spawnDemon(): void {
+    const stats = this.state.stats();
+    const maxDemons = stats.demonCount + 1;
+    const existing = this.floatingItems.filter((f) => f.kind === 'demon').length;
+    if (existing >= maxDemons) return;
+    const angle = Math.random() * Math.PI * 2;
+    const dist = stats.r2 + Math.random() * (stats.r4 - stats.r2); // 恶魔在盘面飞行
+    this.floatingItems.push({
+      pos: { x: BOARD_CENTER.x + Math.cos(angle) * dist, y: BOARD_CENTER.y + Math.sin(angle) * dist },
+      vx: -Math.sin(angle) * 45, vy: Math.cos(angle) * 45,
+      life: 8000, kind: 'demon', r: 14,
+    });
+    // 火焰燃烧特效
+    juice.burst(BOARD_CENTER.x, BOARD_CENTER.y - 20, '#ea4754', 20);
+    juice.burst(BOARD_CENTER.x, BOARD_CENTER.y - 20, '#ff6b35', 12);
+    juice.burst(BOARD_CENTER.x, BOARD_CENTER.y - 20, '#15131f', 8);
+    juice.shake(6);
+    this.floats.push({ pos: { x: BOARD_CENTER.x, y: BOARD_CENTER.y - 30 }, text: '👹 恶魔降临!', color: '#ea4754', life: 1000, vy: -24 });
+  }
+
   private resolveHit(d: Dart): void {
     const stats = this.state.stats();
     const dist = Math.hypot(d.target.x - BOARD_CENTER.x, d.target.y - BOARD_CENTER.y);
-    const { points, label, color, bull } = this.scoreFor(dist, stats);
+    let { points, label, color, bull } = this.scoreFor(dist, stats);
+    // 暴击：概率得分×2
+    if (!d.fromPet && Math.random() < stats.critChance) { points *= 2; label = '暴击!'; color = '#ffd45e'; }
+    // 黄金飞镖：金币×3；金币双倍概率触发再×2
+    let coinMult = (d.golden ? 3 : 1);
+    if (!d.fromPet && Math.random() < stats.coinDoubler) coinMult *= 2;
 
     let mult = 1;
     // 宠物命中奖励按 petReward 缩放（默认 10%）；玩家为全额。
@@ -370,7 +622,7 @@ export class Game {
     if (points > 0) {
       // 金币只拿基础分（控制经济）；分数享受连击倍率（冲高分）。
       // 连击仅由玩家投掷累积，宠物不参与（避免无脑叠连击）。
-      this.state.earn(Math.round(points * petMul));
+      this.state.earn(Math.round(points * petMul * coinMult) + (d.fromPet ? 0 : stats.coinBonus));
       if (!d.fromPet) {
         this.combo += bull ? 2 : 1;
         mult = this.comboMult();
@@ -380,6 +632,28 @@ export class Game {
       this.state.addScore(Math.round(points * mult * petMul));
       this.cb.onCoins(this.state.coins);
       this.cb.onScore(this.state.score);
+      // 剧情：积分首次达到 1000 触发掉落彩票
+      if (this.state.score >= 1000 && !this.obScore1000) {
+        this.obScore1000 = true;
+        this.cb.onOnboard?.('lottoDrop');
+        this.spawnLottoDrop(true);
+      }
+      // 彩票掉落（基础 1% + 技能加成）
+      if (this.ticketDropEnabled && Math.random() < 0.01 + stats.ticketDropRate) {
+        this.spawnLottoDrop(false);
+        // 双倍掉落
+        if (Math.random() < stats.ticketDoubleDrop) {
+          this.spawnLottoDrop(false);
+        }
+      }
+      // 幸运掉落：概率生成金币袋飞行物
+      if (!d.fromPet && Math.random() < stats.luckyDrop) {
+        this.floatingItems.push({
+          pos: { x: d.target.x + (Math.random() * 2 - 1) * 40, y: d.target.y - 30 },
+          vx: 0, vy: 0,
+          life: 5000, kind: 'coinBag', r: 8,
+        });
+      }
     } else if (!d.fromPet) {
       // 失误：连击按护盾衰减（无护盾则清零）
       const before = this.combo;
@@ -510,6 +784,10 @@ export class Game {
     }
     for (const d of this.darts) drawDart(env, d);
     drawFloats(env, this.floats);
+    if (this.dropItems.length) for (const d of this.dropItems) drawLottoDrop(env, d);
+    for (const f of this.floatingItems) drawFloatingItem(env, f);
+    for (const b of this.lightningBolts) drawLightning(env, b);
+    for (const r of this.robots) drawRobot(env, r.pos, this.time);
     // TAP 提示只在前几次投掷显示，之后退役（避免长期闪烁成为视觉噪音）
     drawHint(env, this.cooldownLeft <= 0 && this.throws < 3);
 

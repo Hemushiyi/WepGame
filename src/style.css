@@ -62,7 +62,6 @@ body {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  touch-action: none;
   transform-origin: center center;
 }
 .game-root.rotated {
@@ -100,6 +99,7 @@ body {
 
 /* ---------- HUD ---------- */
 .hud {
+  position: relative;
   flex: 0 0 auto;
   height: 52px;
   display: flex;
@@ -183,6 +183,7 @@ body {
   inset: 0;
   display: block;
   width: 100%;
+  touch-action: none;
   height: 100%;
   /* 画布像素比例已由 game.ts 按舞台宽高比动态对齐（VW 随之变化），
      故无需 object-fit：直接铺满即可，既无黑边也无变形。 */
@@ -205,7 +206,9 @@ body {
   inset: 0;
   display: none;
   overflow: hidden;
+  z-index: 1;
 }
+.screen:not(.active) { pointer-events: none; }
 .screen.active {
   display: flex;
 }
@@ -233,6 +236,35 @@ body {
   opacity: 0.7;
   margin-bottom: 16px;
 }
+.select-footer {
+  margin-top: 14px;
+  text-align: center;
+}
+.select-footer .final-text {
+  font-family: var(--pixel);
+  font-size: var(--ui-fs-sm);
+  color: #ffd45e;
+  animation: text-glow 1.5s ease-in-out infinite alternate;
+}
+@keyframes text-glow {
+  from { text-shadow: 0 0 4px #ffd45e44; }
+  to   { text-shadow: 0 0 12px #ffd45eaa; }
+}
+.select-footer .final-angel {
+  display: inline-block;
+  font-size: 18px;
+  animation: angel-float 2.5s ease-in-out infinite;
+}
+.select-footer .final-angel:last-child {
+  animation-delay: 1.2s;
+}
+@keyframes angel-float {
+  0%, 100% { transform: translateY(0) scale(1); }
+  25%  { transform: translateY(-10px) scale(1.1); }
+  50%  { transform: translateY(-4px) scale(0.95); }
+  75%  { transform: translateY(-14px) scale(1.05); }
+}
+
 .level-cards {
   display: flex;
   gap: 16px;
@@ -378,6 +410,27 @@ body {
   color: var(--accent);
   flex: 1;
 }
+.tree-tabs {
+  display: flex;
+  gap: 6px;
+}
+.tree-tab {
+  font-family: var(--pixel);
+  font-size: var(--ui-fs-sm);
+  padding: 3px 8px;
+  border: 1px solid #3a2670;
+  border-radius: 3px;
+  background: #1c1838;
+  color: #6a648c;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.tree-tab.active {
+  background: #3a2670;
+  color: #ffd45e;
+  border-color: #ffd45e;
+}
+.tree-tab:hover { color: #ece6d2; }
 .modal-coins {
   font-family: var(--pixel);
   font-size: var(--ui-fs);
@@ -1281,4 +1334,170 @@ button:focus-visible,
   .lock-fill {
     transition: none;
   }
+}
+
+/* ---- 剧情模式（底部对话框）---- */
+.screen-story {
+  background: linear-gradient(180deg, #0b0a1f 0%, #1b1340 100%);
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.story-dialog {
+  width: 90%;
+  max-width: 400px;
+  margin: 0 auto 16px auto;
+  background: #1c1838dd;
+  border: 3px solid #3a2670;
+  border-radius: 2px;
+  padding: 14px 12px;
+  cursor: pointer;
+  min-height: 80px;
+}
+
+.story-dialog-text {
+  font-family: "Press Start 2P", monospace;
+  font-size: 9px;
+  line-height: 2;
+  color: #ece6d2;
+  white-space: pre-line;
+  text-align: left;
+}
+
+.story-dialog-hint {
+  text-align: center;
+  color: #ffd45e;
+  font-size: 12px;
+  margin-top: 8px;
+  animation: story-blink 0.8s steps(1) infinite;
+}
+
+@keyframes story-blink {
+  50% { opacity: 0; }
+}
+
+.story-btn {
+  margin-top: 10px;
+  padding: 10px 22px;
+  font-family: "Press Start 2P", monospace;
+  font-size: 10px;
+  color: #0b0a1f;
+  background: linear-gradient(180deg, #ffd45e 0%, #e0a83a 100%);
+  border: 2px solid #9a6a3a;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+
+.story-btn:hover {
+  transform: scale(1.04);
+  box-shadow: 0 0 8px #ffd45e88;
+}
+
+.story-btn:active {
+  transform: scale(0.96);
+}
+
+/* ---- 刮刮乐弹窗（老虎机式三图标）---- */
+.scratch-overlay {
+  position: fixed;
+  inset: 0;
+  background: #08060fcc;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scratch-card {
+  width: 280px;
+  background: linear-gradient(180deg, #ffd45e 0%, #e0a83a 100%);
+  border: 3px solid #9a6a3a;
+  border-radius: 6px;
+  padding: 18px 16px 14px;
+  text-align: center;
+  box-shadow: 0 0 24px #ffd45e66;
+}
+
+.scratch-title {
+  font-family: "Press Start 2P", monospace;
+  font-size: 12px;
+  color: #0b0a1f;
+  margin-bottom: 14px;
+}
+
+.slot-row {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.slot {
+  width: 60px;
+  height: 72px;
+  background: #1c1838;
+  border: 3px solid #3a2670;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  transition: border-color 0.2s;
+}
+
+.slot.stopped {
+  border-color: #ffd45e;
+  box-shadow: 0 0 8px #ffd45e66;
+}
+
+.scratch-btn {
+  padding: 8px 24px;
+  font-family: "Press Start 2P", monospace;
+  font-size: 9px;
+  color: #0b0a1f;
+  background: #ffd45e;
+  border: 2px solid #9a6a3a;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity 0.1s;
+}
+
+.scratch-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scratch-btn:hover:not(:disabled) {
+  background: #ffe9a8;
+}
+
+.scratch-msg {
+  margin-top: 10px;
+  font-family: "Press Start 2P", monospace;
+  font-size: 8px;
+  color: #0b0a1f;
+  min-height: 16px;
+}
+
+.scratch-msg.win { color: #b8333d; font-size: 10px; }
+.scratch-msg.small { color: #6e4a26; }
+.scratch-msg.miss { color: #5a617f; }
+
+.scratch-close {
+  display: block;
+  margin: 10px auto 0;
+  padding: 5px 16px;
+  font-family: "Press Start 2P", monospace;
+  font-size: 8px;
+  color: #ece6d2;
+  background: #1c1838;
+  border: 2px solid #3a2670;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.scratch-close:hover {
+  background: #3a2670;
 }

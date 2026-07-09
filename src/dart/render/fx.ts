@@ -12,7 +12,7 @@ import {
   pixelLine,
   pixelRect,
 } from '../render/contract';
-import type { Dart, FloatText } from '../../shared/types';
+import type { Dart, FloatingItem, FloatText, Vec2 } from '../../shared/types';
 
 // ---------- 确定性伪随机（LCG，不依赖全局随机） ----------
 // 基于 dart 实例 / 帧序号的稳定哈希，避免每帧抖动。
@@ -166,13 +166,13 @@ export function drawDart(env: SceneEnv, dart: Dart): void {
   // 弦向朝向角：起飞点指向落点的方向（target.x 含方向偏移，朝向自然体现出手方向）
   const ang = Math.atan2(dart.target.y - dart.startY, dart.target.x - dart.sx);
 
-  // 颜色：玩家 / 宠物区分
-  const shaft = dart.fromPet ? PAL['o'] : PAL['n']; // 镖杆
-  const shaftDark = dart.fromPet ? PAL['O'] : PAL['N'];
-  const tip = PAL['w']; // 镖尖金属高光
-  const tipDark = PAL['W'];
-  const fletch = dart.fromPet ? PAL['y'] : PAL['r']; // 尾羽
-  const fletchDark = dart.fromPet ? PAL['Y'] : PAL['R'];
+  // 颜色：黄金飞镖 > 宠物 > 玩家
+  const shaft = dart.golden ? PAL['y'] : dart.fromPet ? PAL['o'] : PAL['n'];
+  const shaftDark = dart.golden ? PAL['Y'] : dart.fromPet ? PAL['O'] : PAL['N'];
+  const tip = dart.golden ? '#ffe9a8' : PAL['w'];
+  const tipDark = dart.golden ? '#ffd45e' : PAL['W'];
+  const fletch = dart.golden ? PAL['Y'] : dart.fromPet ? PAL['y'] : PAL['r'];
+  const fletchDark = dart.golden ? PAL['y'] : dart.fromPet ? PAL['Y'] : PAL['R'];
 
   // ---- 拖尾：沿速度反方向画 4 段逐渐变淡的残影（命中钉住后不再画）----
   const speed = Math.hypot(dart.target.x - dart.sx, dart.target.y - dart.startY);
@@ -312,4 +312,223 @@ export function drawHint(env: SceneEnv, visible: boolean): void {
   ctx.fillText(text, px, py);
 
   ctx.restore();
+}
+
+// ============================================================
+// drawLottoDrop：掉落彩票
+// 金色票纸 + 红色印章 + 白边框，像素 sprite 2× 缩放，下落中微微摇晃。
+// ============================================================
+export function drawLottoDrop(env: SceneEnv, drop: import('../../shared/types').DropItem): void {
+  const { ctx, time } = env;
+  const px = Math.round(drop.pos.x);
+  const py = Math.round(drop.pos.y);
+
+  // 下落中轻微摇晃（正弦微旋 + 水平摆动 ~1px）
+  let wobbleX = 0;
+  let wobbleAngle = 0;
+  if (!drop.landed) {
+    wobbleX = Math.round(Math.sin(time * 0.006) * 1.5);
+    wobbleAngle = Math.sin(time * 0.005) * 0.12;
+  }
+
+  ctx.save();
+  ctx.translate(px + wobbleX, py);
+  ctx.rotate(wobbleAngle);
+  ctx.imageSmoothingEnabled = false;
+
+  const w = 8;
+  const h = 10;
+  const scale = 2;
+  const sw = w * scale;
+  const sh = h * scale;
+
+  // 按等级选色（天使/恶魔特殊外观）
+  const tier = drop.tier ?? 0;
+  let bodyColor = tier === 0 ? PAL['y'] : tier === 1 ? '#c8c8da' : tier === 2 ? '#ffe9a8' : '#7df9ff';
+  let borderColor = tier === 0 ? PAL['w'] : tier === 1 ? '#f5f5fb' : tier === 2 ? '#c061e0' : '#f5f5fb';
+  let stampColor = tier === 0 ? PAL['r'] : tier === 1 ? '#4a72e6' : tier === 2 ? '#c061e0' : '#c061e0';
+  if (drop.angel || drop.demon) { bodyColor = '#ffe9a8'; borderColor = '#ffd45e'; stampColor = '#7df9ff'; }
+
+  // 底色
+  ctx.fillStyle = bodyColor;
+  ctx.fillRect(-sw / 2, -sh / 2, sw, sh);
+
+  // 边框
+  ctx.fillStyle = borderColor;
+  ctx.fillRect(-sw / 2, -sh / 2, sw, scale);
+  ctx.fillRect(-sw / 2, sh / 2 - scale, sw, scale);
+  ctx.fillRect(-sw / 2, -sh / 2, scale, sh);
+  ctx.fillRect(sw / 2 - scale, -sh / 2, scale, sh);
+
+  // 印章
+  const sr = scale * 2;
+  ctx.fillStyle = stampColor;
+  ctx.fillRect(-sr, sh / 2 - sr * 2, sr * 2, sr * 2);
+
+  // 外轮廓 1px 描边
+  ctx.fillStyle = PAL['k'];
+  ctx.fillRect(-sw / 2, -sh / 2, sw, 1);
+  ctx.fillRect(-sw / 2, sh / 2, sw, 1);
+  ctx.fillRect(-sw / 2, -sh / 2, 1, sh);
+  ctx.fillRect(sw / 2, -sh / 2, 1, sh);
+
+  ctx.restore();
+
+  // 触地后金色闪烁光环（提示玩家可点击交互）
+  if (drop.landed) {
+    const pulse = 0.5 + 0.5 * Math.sin((env.time / 1000) * 5);
+    if (pulse > 0.6) {
+      pixelCircleRing(ctx, px, py, 12, '#ffd45e');
+    }
+  }
+}
+
+// ============================================================
+// drawFloatingItem：漂浮飞行物（精灵/金币袋）
+// 像素圆形 + 呼吸动画，被飞镖击中时 juice.burst 另行处理。
+// ============================================================
+export function drawFloatingItem(env: SceneEnv, item: FloatingItem): void {
+  const { ctx, time } = env;
+  const px = Math.round(item.pos.x);
+  const py = Math.round(item.pos.y);
+  const bob = Math.round(Math.sin((time / 400 + px * 0.01) * Math.PI * 2) * 2);
+
+  if (item.kind === 'demon') {
+    const r = item.r;
+    const flicker = 0.5 + 0.5 * Math.sin((time / 200) * Math.PI * 2);
+    // 暗红火光
+    ctx.globalAlpha = 0.3 + 0.2 * flicker;
+    pixelCircle(ctx, px, py + bob, r + 3, '#ea4754');
+    ctx.globalAlpha = 1;
+    pixelCircle(ctx, px, py + bob, r, '#b8333d');
+    pixelCircleRing(ctx, px, py + bob, r + 1, '#ff6b35');
+    // 恶魔角
+    pixelRect(ctx, px - r + 2, py + bob - r - 5, 3, 5, '#4a2f1a');
+    pixelRect(ctx, px + r - 5, py + bob - r - 5, 3, 5, '#4a2f1a');
+    // 眼
+    pixelRect(ctx, px - 2, py + bob - 3, 2, 2, '#ffd45e');
+    pixelRect(ctx, px + 1, py + bob - 3, 2, 2, '#ffd45e');
+    // 翅膀抖动
+    const wingFlap = Math.sin((time / 100) * Math.PI * 2);
+    if (wingFlap > 0) {
+      pixelRect(ctx, px - r - 4, py + bob - 2, 4, 1, '#ea4754');
+      pixelRect(ctx, px + r + 1, py + bob - 2, 4, 1, '#ea4754');
+    }
+  } else if (item.kind === 'fairy') {
+    // 紫色精灵：发光圆 + 呼吸外环
+    const r = item.r;
+    const breathe = 0.6 + 0.4 * Math.sin((time / 600) * Math.PI * 2);
+    ctx.globalAlpha = 0.35 + 0.15 * Math.sin((time / 500) * Math.PI * 2);
+    pixelCircle(ctx, px, py + bob, r + 2, '#7df9ff');
+    ctx.globalAlpha = 1;
+    pixelCircle(ctx, px, py + bob, r, '#c061e0');
+    pixelCircleRing(ctx, px, py + bob, r + 1, '#7df9ff');
+    // 两个小"翅膀"像素点
+    pixelRect(ctx, px - r - 3, py + bob - 2, 3, 1, '#b561d8');
+    pixelRect(ctx, px + r + 1, py + bob - 2, 3, 1, '#b561d8');
+  } else {
+    // 金币袋：金色方块 + 描边
+    const s = 5;
+    const by = py + bob;
+    pixelRect(ctx, px - s, by - s, s * 2 + 1, s * 2 + 1, '#e0a83a');
+    pixelRect(ctx, px - s + 1, by - s + 1, s * 2 - 1, s * 2 - 1, '#ffd45e');
+    pixelRect(ctx, px - 1, by - s - 2, 2, 2, '#ffd45e');
+    // 描边
+    pixelRect(ctx, px - s, by - s, s * 2 + 1, 1, '#15131f');
+    pixelRect(ctx, px - s, by + s, s * 2 + 1, 1, '#15131f');
+    pixelRect(ctx, px - s, by - s, 1, s * 2 + 1, '#15131f');
+    pixelRect(ctx, px + s, by - s, 1, s * 2 + 1, '#15131f');
+  }
+}
+
+// ============================================================
+// drawLightning：闪电命中特效（锯齿状劈向靶心）
+// ============================================================
+export function drawLightning(
+  env: SceneEnv,
+  bolt: { x1: number; y1: number; x2: number; y2: number; life: number },
+): void {
+  const { ctx } = env;
+  const a = Math.max(0, Math.min(1, bolt.life / 300));
+  if (a <= 0) return;
+  ctx.globalAlpha = a;
+
+  // 锯齿闪电：在 start→end 之间生成 4 段锯齿
+  const segs = 4;
+  const dx = (bolt.x2 - bolt.x1) / segs;
+  const dy = (bolt.y2 - bolt.y1) / segs;
+  let px = bolt.x1;
+  let py = bolt.y1;
+
+  // 外层白色辉光（稍微偏移）
+  ctx.fillStyle = '#ffffff';
+  for (let i = 0; i < segs; i++) {
+    const jx = (Math.random() * 2 - 1) * 18;
+    const nx = bolt.x1 + dx * (i + 1) + jx;
+    const ny = bolt.y1 + dy * (i + 1) + (Math.random() * 2 - 1) * 12;
+    pixelLine(ctx, px - 1, py, Math.round(nx) - 1, Math.round(ny), '#ffffff');
+    pixelLine(ctx, px + 1, py, Math.round(nx) + 1, Math.round(ny), '#ffffff');
+    px = nx;
+    py = ny;
+  }
+
+  // 内层青色闪电主色
+  px = bolt.x1;
+  py = bolt.y1;
+  ctx.fillStyle = PAL['e'];
+  for (let i = 0; i < segs; i++) {
+    const jx = (Math.random() * 2 - 1) * 16;
+    const nx = bolt.x1 + dx * (i + 1) + jx;
+    const ny = bolt.y1 + dy * (i + 1) + (Math.random() * 2 - 1) * 10;
+    pixelLine(ctx, Math.round(px), Math.round(py), Math.round(nx), Math.round(ny), PAL['e']);
+    pixelLine(ctx, Math.round(px), Math.round(py) - 1, Math.round(nx), Math.round(ny) - 1, '#7df9ff');
+    px = nx;
+    py = ny;
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+// ============================================================
+// drawRobot：刮奖机器人（像素小机器人，走动动画）
+// ============================================================
+export function drawRobot(env: SceneEnv, pos: Vec2, time: number): void {
+  const { ctx } = env;
+  const px = Math.round(pos.x);
+  const py = Math.round(pos.y);
+  const scale = 2;
+
+  // 走路帧：腿交替
+  const walkT = Math.floor((time / 150) % 2);
+  ctx.imageSmoothingEnabled = false;
+
+  // 身体（银灰）
+  ctx.fillStyle = '#c8c8da';
+  ctx.fillRect(px - 4 * scale, py - 5 * scale, 8 * scale, 5 * scale);
+  ctx.fillStyle = '#5a617f';
+  ctx.fillRect(px - 3 * scale, py - 6 * scale, 6 * scale, 2 * scale);
+
+  // 眼睛（红）
+  ctx.fillStyle = '#ea4754';
+  ctx.fillRect(px - 2 * scale, py - 5 * scale, 2 * scale, 2 * scale);
+  ctx.fillRect(px + 1 * scale, py - 5 * scale, 2 * scale, 2 * scale);
+
+  // 腿
+  ctx.fillStyle = '#3a4159';
+  if (walkT === 0) {
+    ctx.fillRect(px - 3 * scale, py + 0, 3 * scale, 3 * scale);
+    ctx.fillRect(px + 1 * scale, py + 0, 3 * scale, 3 * scale);
+  } else {
+    ctx.fillRect(px - 4 * scale, py + 0, 3 * scale, 2 * scale);
+    ctx.fillRect(px + 2 * scale, py + 0, 3 * scale, 2 * scale);
+  }
+
+  // 轮子
+  ctx.fillStyle = '#15131f';
+  ctx.fillRect(px - 4 * scale, py + 3 * scale, 2 * scale, 2 * scale);
+  ctx.fillRect(px + 3 * scale, py + 3 * scale, 2 * scale, 2 * scale);
+
+  // 天线
+  ctx.fillStyle = '#ea4754';
+  ctx.fillRect(px, py - 7 * scale, 1, 2 * scale);
 }

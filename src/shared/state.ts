@@ -2,6 +2,7 @@ import type { DerivedStats, LottoStats, BattleStats, SkillEffect, LevelId } from
 import { ALL_NODES, NODE_BY_ID } from '../dart/skills';
 import { ALL_LOTTO_NODES, LOTTO_NODE_BY_ID } from '../lottery/skills';
 import { ALL_BATTLE_NODES, BATTLE_NODE_BY_ID } from '../battle/skills';
+import { ALL_LOTTO_DART_NODES, LOTTO_DART_NODE_BY_ID } from '../story/lottoSkills';
 
 // ===== 游戏存档与派生属性 =====
 
@@ -51,10 +52,46 @@ const BASE: DerivedStats = {
   petCount: 0,
   petInterval: 2500,
   petAccuracy: 0.2,
-  petReward: 0.1,
+  petReward: 0.3,
   comboCap: 2,
   comboShield: 0,
   windResist: 0.1,
+  chainThrow: 0,
+  critChance: 0,
+  goldenDart: 0,
+  fairySpawn: 0,
+  luckyDrop: 0,
+  lightningStrike: 0,
+  stormSurge: 0,
+  autoAim: 0,
+  thunderBurst: 0,
+  dartPierce: 0,
+  tripleShot: 0,
+  petCrit: 0,
+  coinDoubler: 0,
+  coinBonus: 0,
+  ticketDropRate: 0,
+  ticketLuck: 0,
+  ticketValue: 0,
+  ticketRobot: 0,
+  ticketRobotSpeed: 0,
+  ticketRobotLuck: 0,
+  ticketDoubleDrop: 0,
+  ticketJackpot: 0,
+  silverUnlock: 0,
+  silverLuck: 0,
+  goldUnlock: 0,
+  goldLuck: 0,
+  robotTier: 0,
+  demonDrop: 0,
+  demonCount: 0,
+  demonShards: 0,
+  demonUpgrade: 0,
+  robotCount: 0,
+  robotSpeed: 0,
+  angelUnlock: 0,
+  diamondUnlock: 0,
+  diamondLuck: 0,
 };
 
 /** 彩票关卡基础属性（未被任何彩票技能加成前） */
@@ -88,7 +125,10 @@ interface SaveData {
   unlocked?: string[]; // v2 老存档：飞镖技能（迁移后并入 unlockedDart）
   unlockedDart?: string[]; // v3 起按关卡分离
   unlockedLotto?: string[]; // v3 起按关卡分离
-  unlockedBattle?: string[]; // 打怪关卡技能（缺省 → 仅 bcore）
+  unlockedBattle?: string[]; // 打怪关卡技能
+  unlockedLottoDart?: string[]; // 彩票技能树（v3 第三段剧情后解锁）
+  lottoTreeUnlocked?: boolean;
+  angelAchievement?: boolean;
   lotto?: LottoSave; // v2 起新增
 }
 
@@ -103,6 +143,9 @@ export class GameState {
   unlockedLotto = new Set<string>(['lcore']);
   /** 打怪关卡已解锁技能（默认拥有 bcore） */
   unlockedBattle = new Set<string>(['bcore']);
+  unlockedLottoDart = new Set<string>(['L0']);
+  lottoTreeUnlocked = false;
+  angelAchievement = false;
   /** 刮刮乐统计（持久化） */
   lotto: LottoSave = { ...DEFAULT_LOTTO };
   private cachedStats: DerivedStats | null = null;
@@ -129,6 +172,9 @@ export class GameState {
         this.unlockedDart = new Set(['core', ...(legacyDart || [])]);
         this.unlockedLotto = new Set(['lcore', ...(data.v >= 3 ? data.unlockedLotto || [] : [])]);
         this.unlockedBattle = new Set(['bcore', ...(data.unlockedBattle || [])]);
+        this.unlockedLottoDart = new Set(['L0', ...(data.unlockedLottoDart || [])]);
+        this.lottoTreeUnlocked = !!data.lottoTreeUnlocked;
+        this.angelAchievement = !!data.angelAchievement;
         // 仅 v2+ 携带彩票统计；v1 老存档保持默认零值（金币/技能照常继承）
         if (data.v >= 2 && data.lotto) {
           const incoming = data.lotto as Partial<LottoSave>;
@@ -169,6 +215,9 @@ export class GameState {
       unlockedDart: [...this.unlockedDart],
       unlockedLotto: [...this.unlockedLotto],
       unlockedBattle: [...this.unlockedBattle],
+      unlockedLottoDart: [...this.unlockedLottoDart],
+      lottoTreeUnlocked: this.lottoTreeUnlocked,
+      angelAchievement: this.angelAchievement,
       lotto: this.lotto,
     };
     try {
@@ -197,6 +246,51 @@ export class GameState {
     s.comboCap = Math.min(8, Math.max(1, s.comboCap));
     s.comboShield = Math.min(0.8, Math.max(0, s.comboShield));
     s.windResist = Math.min(0.8, Math.max(0, s.windResist));
+    s.chainThrow = Math.min(0.25, Math.max(0, s.chainThrow));
+    s.critChance = Math.min(0.5, Math.max(0, s.critChance));
+    s.goldenDart = Math.min(0.2, Math.max(0, s.goldenDart));
+    s.fairySpawn = Math.max(0, s.fairySpawn);
+    s.luckyDrop = Math.min(0.2, Math.max(0, s.luckyDrop));
+    s.lightningStrike = Math.min(0.35, Math.max(0, s.lightningStrike));
+    s.stormSurge = Math.min(3, Math.max(0, s.stormSurge));
+    s.autoAim = Math.min(0.3, Math.max(0, s.autoAim));
+    s.thunderBurst = Math.min(0.15, Math.max(0, s.thunderBurst));
+    s.dartPierce = Math.min(3, Math.max(0, s.dartPierce));
+    s.tripleShot = Math.min(0.25, Math.max(0, s.tripleShot));
+    s.petCrit = Math.min(0.3, Math.max(0, s.petCrit));
+    s.coinDoubler = Math.min(0.25, Math.max(0, s.coinDoubler));
+    // 叠加彩票技能树效果
+    for (const node of ALL_LOTTO_DART_NODES) {
+      if (!this.unlockedLottoDart.has(node.id)) continue;
+      for (const e of node.effects) applyEffect(s, e);
+    }
+    s.coinBonus = Math.max(0, s.coinBonus);
+    s.ticketDropRate = Math.min(0.05, Math.max(0, s.ticketDropRate));
+    s.ticketLuck = Math.min(0.2, Math.max(0, s.ticketLuck));
+    s.ticketValue = Math.min(2, Math.max(0, s.ticketValue));
+    s.ticketRobot = Math.max(0, s.ticketRobot);
+    s.ticketRobotSpeed = Math.min(0.6, Math.max(0, s.ticketRobotSpeed));
+    s.ticketRobotLuck = Math.min(0.2, Math.max(0, s.ticketRobotLuck));
+    s.ticketDoubleDrop = Math.min(0.25, Math.max(0, s.ticketDoubleDrop));
+    s.ticketJackpot = Math.min(0.1, Math.max(0, s.ticketJackpot));
+    s.silverUnlock = Math.max(0, s.silverUnlock);
+    s.silverLuck = Math.min(0.25, Math.max(0, s.silverLuck));
+    s.goldUnlock = Math.max(0, s.goldUnlock);
+    s.goldLuck = Math.min(0.2, Math.max(0, s.goldLuck));
+    s.robotTier = Math.min(2, Math.max(0, s.robotTier));
+    s.demonDrop = Math.min(0.02, Math.max(0, s.demonDrop));
+    s.demonCount = Math.min(3, Math.max(0, s.demonCount));
+    s.demonShards = Math.min(3, Math.max(0, s.demonShards));
+    s.demonUpgrade = Math.min(0.5, Math.max(0, s.demonUpgrade));
+    s.robotCount = Math.max(0, s.robotCount);
+    s.robotSpeed = Math.min(0.5, Math.max(0, s.robotSpeed));
+    s.angelUnlock = Math.max(0, s.angelUnlock);
+    s.diamondUnlock = Math.max(0, s.diamondUnlock);
+    s.diamondLuck = Math.min(0.15, Math.max(0, s.diamondLuck));
+    // 更新钳制
+    s.chainThrow = Math.min(0.30, Math.max(0, s.chainThrow));
+    s.critChance = Math.min(0.35, Math.max(0, s.critChance));
+    s.petReward = Math.min(0.7, Math.max(0.3, s.petReward));
     this.cachedStats = s;
     return s;
   }
@@ -325,6 +419,37 @@ export class GameState {
     return this.totalEarned >= LOTTO_UNLOCK_TOTAL;
   }
 
+  /** 解锁彩票技能树（第三段剧情触发时调用） */
+  unlockLottoTree(): void {
+    if (this.lottoTreeUnlocked) return;
+    this.lottoTreeUnlocked = true;
+    this.save();
+  }
+
+  /** 购买彩票技能树节点 */
+  buyLottoDart(id: string): boolean {
+    const node = LOTTO_DART_NODE_BY_ID[id];
+    if (!node || this.unlockedLottoDart.has(id)) return false;
+    if (this.coins < node.cost) return false;
+    if (!node.requires.every((r) => this.unlockedLottoDart.has(r))) return false;
+    this.coins -= node.cost;
+    this.unlockedLottoDart.add(id);
+    this.save();
+    return true;
+  }
+
+  /** 彩票技能派生属性（用于飞镖游戏消费） */
+  lottoDartStats(): Record<string, number> {
+    const s: Record<string, number> = { ticketDropRate: 0, ticketLuck: 0, ticketValue: 0, ticketRobot: 0, ticketRobotSpeed: 0, ticketRobotLuck: 0, ticketDoubleDrop: 0, ticketJackpot: 0 };
+    for (const node of ALL_LOTTO_DART_NODES) {
+      if (!this.unlockedLottoDart.has(node.id)) continue;
+      for (const e of node.effects) {
+        if (e.kind in s) (s as any)[e.kind] += (e as any).value ?? 0;
+      }
+    }
+    return s;
+  }
+
   /** 记录一次彩票结算：累计统计 + 更新该档幸运值
    *  （中奖清零、未中 +1、封顶 maxPity）。盈亏由 won−wagered 派生，不单独存。 */
   recordLotto(cost: number, prize: number, tierId: string, maxPity: number): void {
@@ -378,6 +503,42 @@ function applyEffect(s: DerivedStats, e: SkillEffect): void {
     case 'comboCap': s.comboCap += e.value; break;
     case 'comboShield': s.comboShield += e.value; break;
     case 'windResist': s.windResist += e.value; break;
+    case 'chainThrow': s.chainThrow += e.value; break;
+    case 'critChance': s.critChance += e.value; break;
+    case 'goldenDart': s.goldenDart += e.value; break;
+    case 'fairySpawn': s.fairySpawn += e.value; break;
+    case 'luckyDrop': s.luckyDrop += e.value; break;
+    case 'lightningStrike': s.lightningStrike += e.value; break;
+    case 'stormSurge': s.stormSurge += e.value; break;
+    case 'autoAim': s.autoAim += e.value; break;
+    case 'thunderBurst': s.thunderBurst += e.value; break;
+    case 'dartPierce': s.dartPierce += e.value; break;
+    case 'tripleShot': s.tripleShot += e.value; break;
+    case 'petCrit': s.petCrit += e.value; break;
+    case 'coinDoubler': s.coinDoubler += e.value; break;
+    case 'coinBonus': s.coinBonus += e.value; break;
+    case 'ticketDropRate': s.ticketDropRate += e.value; break;
+    case 'ticketLuck': s.ticketLuck += e.value; break;
+    case 'ticketValue': s.ticketValue += e.value; break;
+    case 'ticketRobot': s.ticketRobot += e.value; break;
+    case 'ticketRobotSpeed': s.ticketRobotSpeed += e.value; break;
+    case 'ticketRobotLuck': s.ticketRobotLuck += e.value; break;
+    case 'ticketDoubleDrop': s.ticketDoubleDrop += e.value; break;
+    case 'ticketJackpot': s.ticketJackpot += e.value; break;
+    case 'silverUnlock': s.silverUnlock += e.value; break;
+    case 'silverLuck': s.silverLuck += e.value; break;
+    case 'goldUnlock': s.goldUnlock += e.value; break;
+    case 'goldLuck': s.goldLuck += e.value; break;
+    case 'robotTier': s.robotTier += e.value; break;
+    case 'demonDrop': s.demonDrop += e.value; break;
+    case 'demonCount': s.demonCount += e.value; break;
+    case 'demonShards': s.demonShards += e.value; break;
+    case 'demonUpgrade': s.demonUpgrade += e.value; break;
+    case 'robotCount': s.robotCount += e.value; break;
+    case 'robotSpeed': s.robotSpeed += e.value; break;
+    case 'angelUnlock': s.angelUnlock += e.value; break;
+    case 'diamondUnlock': s.diamondUnlock += e.value; break;
+    case 'diamondLuck': s.diamondLuck += e.value; break;
   }
 }
 

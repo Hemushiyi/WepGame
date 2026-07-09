@@ -2,12 +2,13 @@
 
 export type Vec2 = { x: number; y: number };
 
-/** 技能分支（飞镖四分支 + 彩票三分支 + 打怪三分支） */
+/** 技能分支（飞镖五分支 + 彩票三分支 + 打怪三分支） */
 export type SkillBranch =
   | 'target'
   | 'speed'
   | 'pet'
   | 'combo'
+  | 'storm'
   | 'luck'
   | 'economy'
   | 'perk'
@@ -34,6 +35,48 @@ export type SkillEffect =
   | { kind: 'comboCap'; value: number } // 连击倍率上限（加法）
   | { kind: 'comboShield'; value: number } // 失误时保留的连击比例（0..1）
   | { kind: 'windResist'; value: number } // 抵御风向影响（0..1）
+  | { kind: 'chainThrow'; value: number } // 连续投掷概率
+  | { kind: 'critChance'; value: number } // 暴击概率，得分×2
+  | { kind: 'goldenDart'; value: number } // 黄金飞镖概率，命中金币×3
+  | { kind: 'fairySpawn'; value: number } // 漂浮精灵数量
+  | { kind: 'luckyDrop'; value: number } // 命中后掉落金币袋概率
+  // ---- 闪电分支（storm）----
+  | { kind: 'lightningStrike'; value: number } // 飞行中概率闪电修正自动靶心
+  | { kind: 'stormSurge'; value: number } // 闪电触发额外金币倍率
+  | { kind: 'autoAim'; value: number } // 准星振荡范围缩小
+  | { kind: 'thunderBurst'; value: number } // 命中触发全屏雷暴
+  // ---- 扩展 skill ----
+  | { kind: 'dartPierce'; value: number } // 穿透飞镖（命中后继续飞行）
+  | { kind: 'tripleShot'; value: number } // 三/四连发概率
+  | { kind: 'petCrit'; value: number } // 宠物暴击概率
+  // ---- 金币加成 ----
+  | { kind: 'coinDoubler'; value: number } // 金币翻倍概率
+  | { kind: 'coinBonus'; value: number } // 每次命中基础金币加成
+  // ---- 彩票技能（lottoDart 分支）----
+  | { kind: 'ticketDropRate'; value: number } // 彩票掉落概率加成
+  | { kind: 'ticketLuck'; value: number } // 彩票中奖率加成
+  | { kind: 'ticketValue'; value: number } // 彩票奖金倍率
+  | { kind: 'ticketRobot'; value: number } // 刮奖机器人（>0=解锁）
+  | { kind: 'ticketRobotSpeed'; value: number } // 机器人拾取加速
+  | { kind: 'ticketRobotLuck'; value: number } // 机器人中奖率
+  | { kind: 'ticketDoubleDrop'; value: number } // 双倍掉落概率
+  | { kind: 'ticketJackpot'; value: number } // 超级大奖概率
+  // ---- 彩票等级扩展 ----
+  | { kind: 'silverUnlock'; value: number } // 解锁银票
+  | { kind: 'silverLuck'; value: number } // 银票幸运
+  | { kind: 'goldUnlock'; value: number } // 解锁金票
+  | { kind: 'goldLuck'; value: number } // 金票幸运
+  | { kind: 'robotTier'; value: number } // 机器人等级（0铜1银2金）
+  // ---- 恶魔彩票 ----
+  | { kind: 'demonDrop'; value: number } // 恶魔票掉落概率
+  | { kind: 'demonCount'; value: number } // 恶魔最大数量
+  | { kind: 'demonShards'; value: number } // 恶魔爆票数量加成
+  | { kind: 'demonUpgrade'; value: number } // 恶魔爆票升级概率
+  | { kind: 'robotCount'; value: number } // 机器人同时工作数量
+  | { kind: 'robotSpeed'; value: number } // 机器人行走加速
+  | { kind: 'angelUnlock'; value: number } // 解锁终极大奖
+  | { kind: 'diamondUnlock'; value: number } // 解锁钻石票
+  | { kind: 'diamondLuck'; value: number } // 钻石票幸运
   // ---- 彩票技能（仅作用于彩票关卡）----
   | { kind: 'lottoCost'; value: number } // 票价折扣比例（加法，0..0.5）
   | { kind: 'lottoWin'; value: number } // 基础中奖率加成（加法）
@@ -84,6 +127,42 @@ export interface DerivedStats {
   comboCap: number; // 连击倍率上限（基础 2.0）
   comboShield: number; // 失误时保留的连击比例（0..1）
   windResist: number; // 抵御风向影响（0..1）
+  chainThrow: number; // 连续投掷概率
+  critChance: number; // 暴击概率
+  goldenDart: number; // 黄金飞镖概率
+  fairySpawn: number; // 漂浮精灵数量
+  luckyDrop: number; // 命中掉落金币袋概率
+  lightningStrike: number;
+  stormSurge: number;
+  autoAim: number;
+  thunderBurst: number;
+  dartPierce: number;
+  tripleShot: number;
+  petCrit: number;
+  coinDoubler: number;
+  coinBonus: number;
+  ticketDropRate: number;
+  ticketLuck: number;
+  ticketValue: number;
+  ticketRobot: number;
+  ticketRobotSpeed: number;
+  ticketRobotLuck: number;
+  ticketDoubleDrop: number;
+  ticketJackpot: number;
+  silverUnlock: number;
+  silverLuck: number;
+  goldUnlock: number;
+  goldLuck: number;
+  robotTier: number;
+  demonDrop: number;
+  demonCount: number;
+  demonShards: number;
+  demonUpgrade: number;
+  robotCount: number;
+  robotSpeed: number;
+  angelUnlock: number;
+  diamondUnlock: number;
+  diamondLuck: number;
 }
 
 /** 彩票关卡的派生属性（由彩票技能树解锁节点累加） */
@@ -118,6 +197,8 @@ export interface Dart {
   speed: number; // 完整飞行所需毫秒
   fromPet: boolean;
   hit: boolean;
+  golden?: boolean; // 黄金飞镖，命中金币×3
+  zapped?: boolean; // 已被闪电修正（防重复触发）
 }
 
 /** 飞起的分数飘字 */
@@ -127,4 +208,26 @@ export interface FloatText {
   color: string;
   life: number; // 剩余毫秒
   vy: number;
+}
+
+/** 漂浮飞行物（精灵、金币袋等） */
+export interface FloatingItem {
+  pos: Vec2;
+  vx: number;
+  vy: number;
+  life: number; // 剩余毫秒
+  kind: 'fairy' | 'coinBag' | 'demon';
+  r: number; // 碰撞半径
+}
+
+/** 掉落物品（如剧情触发的彩票） */
+export interface DropItem {
+  pos: Vec2;
+  life: number; // 剩余毫秒（触地后倒计时消失）
+  vy: number; // 下落速度 px/s（负值=上浮，正值=下落）
+  landed: boolean;
+  isStoryDrop?: boolean; // 首次剧情掉落
+  tier?: number; // 0铜/1银/2金，-1=天使/恶魔
+  angel?: boolean; // 天使票
+  demon?: boolean; // 恶魔票
 }

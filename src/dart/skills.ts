@@ -189,15 +189,15 @@ export const SKILLS: SkillNode[] = [
   },
   {
     id: 'p8', name: '宠物分红 I', branch: 'pet', cost: 2500,
-    effects: [{ kind: 'petReward', value: 0.15 }],
+    effects: [{ kind: 'petReward', value: 0.10 }],
     requires: ['p6'], pos: { x: 104, y: 66 },
-    desc: '宠物命中奖励比例 +15%（10% → 25%）', icon: '💰',
+    desc: '宠物命中奖励 +10%（30% → 40%）', icon: '💰',
   },
   {
     id: 'p9', name: '宠物分红 II', branch: 'pet', cost: 6000,
-    effects: [{ kind: 'petReward', value: 0.2 }],
+    effects: [{ kind: 'petReward', value: 0.15 }],
     requires: ['p8'], pos: { x: 110, y: 76 },
-    desc: '宠物命中奖励比例再 +20%（→ 45%）', icon: '💰',
+    desc: '宠物命中奖励 +15%（40% → 55%）', icon: '💰',
   },
 
   // ---------- 技巧分支（左下：连击与风向） ----------
@@ -253,6 +253,195 @@ export const SKILLS: SkillNode[] = [
     requires: ['c5', 'c6'], pos: { x: 12, y: 72 },
     desc: '连击上限 +2 / 护盾 +0.25 / 稳风 +0.3（技巧 capstone）', icon: '🏆',
   },
+  {
+    id: 's4b', name: '连续投掷 I', branch: 'speed', cost: 1000,
+    effects: [{ kind: 'chainThrow', value: 0.08 }],
+    requires: ['s4'], pos: { x: 68, y: 42 },
+    desc: '8% 概率投出后再补一镖', icon: '🔄',
+  },
+  {
+    id: 's4c', name: '连续投掷 II', branch: 'speed', cost: 2500,
+    effects: [{ kind: 'chainThrow', value: 0.10 }],
+    requires: ['s4b'], pos: { x: 84, y: 58 },
+    desc: '再加 10%（累计 18%）', icon: '🔄',
+  },
+  {
+    id: 's4d', name: '连续投掷 III', branch: 'speed', cost: 5000,
+    effects: [{ kind: 'chainThrow', value: 0.12 }],
+    requires: ['s4c'], pos: { x: 96, y: 68 },
+    desc: '再加 12%（累计 30%）', icon: '🔄',
+  },
+  {
+    id: 't4b', name: '暴击 I', branch: 'target', cost: 800,
+    effects: [{ kind: 'critChance', value: 0.08 }],
+    requires: ['t4'], pos: { x: 28, y: 44 },
+    desc: '8% 概率暴击得分×2', icon: '💥',
+  },
+  {
+    id: 't4c', name: '暴击 II', branch: 'target', cost: 2000,
+    effects: [{ kind: 'critChance', value: 0.10 }],
+    requires: ['t4b'], pos: { x: 22, y: 52 },
+    desc: '再加 10%（累计 18%）', icon: '💥',
+  },
+  {
+    id: 't4d', name: '暴击 III', branch: 'target', cost: 4000,
+    effects: [{ kind: 'critChance', value: 0.12 }],
+    requires: ['t4c'], pos: { x: 16, y: 60 },
+    desc: '再加 12%（累计 30%）', icon: '💥',
+  },
+  {
+    id: 'c3b', name: '幸运掉落 I', branch: 'combo', cost: 1200,
+    effects: [{ kind: 'luckyDrop', value: 0.06 }],
+    requires: ['c3'], pos: { x: 62, y: 92 },
+    desc: '命中 6% 概率掉金币袋', icon: '🎁',
+  },
+  {
+    id: 'c3c', name: '幸运掉落 II', branch: 'combo', cost: 3000,
+    effects: [{ kind: 'luckyDrop', value: 0.09 }],
+    requires: ['c3b'], pos: { x: 20, y: 86 },
+    desc: '再加 9%（累计 15%）', icon: '🎁',
+  },
+  {
+    id: 'p3b', name: '精灵伙伴 I', branch: 'pet', cost: 1500,
+    effects: [{ kind: 'fairySpawn', value: 1 }],
+    requires: ['p3'], pos: { x: 56, y: 78 },
+    desc: '解锁漂浮精灵，击中+80金币', icon: '🧚',
+  },
+  {
+    id: 'p3c', name: '精灵伙伴 II', branch: 'pet', cost: 3500,
+    effects: [{ kind: 'fairySpawn', value: 1 }],
+    requires: ['p3b'], pos: { x: 60, y: 90 },
+    desc: '第二只精灵（最多2只）', icon: '🧚',
+  },
+  {
+    id: 't6b', name: '黄金飞镖 I', branch: 'target', cost: 2500,
+    effects: [{ kind: 'goldenDart', value: 0.06 }],
+    requires: ['t6'], pos: { x: 4, y: 6 },
+    desc: '6% 概率黄金飞镖，金币×3', icon: '🪙',
+  },
+  {
+    id: 't6c', name: '黄金飞镖 II', branch: 'target', cost: 5000,
+    effects: [{ kind: 'goldenDart', value: 0.09 }],
+    requires: ['t6b'], pos: { x: -4, y: 10 },
+    desc: '再加 9%（累计 15%）', icon: '🪙',
+  },
+
+  // ---------- 闪电分支（storm：第五分支，core 正下方偏右） ----------
+  {
+    id: 'z1', name: '静电感应', branch: 'storm', cost: 500,
+    effects: [{ kind: 'autoAim', value: 0.10 }],
+    requires: ['core'], pos: { x: 42, y: 38 },
+    desc: '准星范围缩小 10%，更易命中', icon: '⚡',
+  },
+  {
+    id: 'z2', name: '闪电命中 I', branch: 'storm', cost: 1200,
+    effects: [{ kind: 'lightningStrike', value: 0.05 }],
+    requires: ['z1'], pos: { x: 34, y: 50 },
+    desc: '5% 概率闪电修正飞镖自动靶心', icon: '🗲',
+  },
+  {
+    id: 'z3', name: '闪电命中 II', branch: 'storm', cost: 3000,
+    effects: [{ kind: 'lightningStrike', value: 0.08 }],
+    requires: ['z2'], pos: { x: 34, y: 58 },
+    desc: '再加 8%（累计 13%）', icon: '🗲',
+  },
+  {
+    id: 'z4', name: '雷暴', branch: 'storm', cost: 2500,
+    effects: [{ kind: 'stormSurge', value: 1.0 }],
+    requires: ['z2'], pos: { x: 44, y: 64 },
+    desc: '闪电触发时金币额外 ×2', icon: '🌩️',
+  },
+  {
+    id: 'z5', name: '闪电命中 III', branch: 'storm', cost: 6000,
+    effects: [{ kind: 'lightningStrike', value: 0.10 }],
+    requires: ['z3'], pos: { x: 10, y: 78 },
+    desc: '再加 10%（累计 23%）', icon: '🗲',
+  },
+  {
+    id: 'z6', name: '全屏雷暴', branch: 'storm', cost: 5000,
+    effects: [{ kind: 'thunderBurst', value: 0.04 }],
+    requires: ['z4', 'z5'], pos: { x: 36, y: 82 },
+    desc: '4% 概率全屏闪电清空飞行物×2', icon: '⚡',
+  },
+  {
+    id: 'z7', name: '雷神之怒', branch: 'storm', cost: 12000,
+    effects: [
+      { kind: 'lightningStrike', value: 0.05 },
+      { kind: 'stormSurge', value: 1.5 },
+      { kind: 'thunderBurst', value: 0.06 },
+    ],
+    requires: ['z5', 'z6'], pos: { x: 36, y: 88 },
+    desc: '闪电+5% / 金币+1.5× / 雷暴+6%（闪电 capstone）', icon: '👑',
+  },
+
+  // ---------- 穿透飞镖（target 分支扩展）----------
+  {
+    id: 't2b', name: '穿透飞镖 I', branch: 'target', cost: 1500,
+    effects: [{ kind: 'dartPierce', value: 1 }],
+    requires: ['t2'], pos: { x: 24, y: 2 },
+    desc: '飞镖命中后继续穿透 1 层环', icon: '🔱',
+  },
+  {
+    id: 't2c', name: '穿透飞镖 II', branch: 'target', cost: 4000,
+    effects: [{ kind: 'dartPierce', value: 2 }],
+    requires: ['t2b'], pos: { x: 14, y: -4 },
+    desc: '再穿透 2 层（累计 3 层）', icon: '🔱',
+  },
+
+  // ---------- 三/四连发（speed 分支扩展）----------
+  {
+    id: 's1b', name: '三连发', branch: 'speed', cost: 2000,
+    effects: [{ kind: 'tripleShot', value: 0.06 }],
+    requires: ['s1'], pos: { x: 58, y: 18 },
+    desc: '6% 概率一次投三支镖', icon: '✊',
+  },
+  {
+    id: 's1c', name: '四连发', branch: 'speed', cost: 5000,
+    effects: [{ kind: 'tripleShot', value: 0.10 }],
+    requires: ['s1b'], pos: { x: 74, y: 8 },
+    desc: '再加 10%（累计 16%）一次四支', icon: '✊',
+  },
+
+  // ---------- 宠物暴击（pet 分支扩展）----------
+  {
+    id: 'p2b', name: '宠物暴击 I', branch: 'pet', cost: 1800,
+    effects: [{ kind: 'petCrit', value: 0.08 }],
+    requires: ['p2'], pos: { x: 52, y: 72 },
+    desc: '宠物命中 8% 暴击得分×2', icon: '💢',
+  },
+  {
+    id: 'p2c', name: '宠物暴击 II', branch: 'pet', cost: 3500,
+    effects: [{ kind: 'petCrit', value: 0.10 }],
+    requires: ['p2b'], pos: { x: 48, y: 80 },
+    desc: '再加 10%（累计 18%）', icon: '💢',
+  },
+
+  // ---------- 金币加成（combo + target 分支扩展）----------
+  {
+    id: 'c4b', name: '金币双倍 I', branch: 'combo', cost: 1800,
+    effects: [{ kind: 'coinDoubler', value: 0.08 }],
+    requires: ['c4'], pos: { x: 54, y: 64 },
+    desc: '命中后 8% 概率金币翻倍', icon: '💸',
+  },
+  {
+    id: 'c4c', name: '金币双倍 II', branch: 'combo', cost: 4000,
+    effects: [{ kind: 'coinDoubler', value: 0.10 }],
+    requires: ['c4b'], pos: { x: 64, y: 72 },
+    desc: '再加 10%（累计 18%）', icon: '💸',
+  },
+  {
+    id: 't1b', name: '金币基础 I', branch: 'target', cost: 800,
+    effects: [{ kind: 'coinBonus', value: 5 }],
+    requires: ['t1'], pos: { x: 48, y: 28 },
+    desc: '每次命中额外 +5 金币', icon: '🪙',
+  },
+  {
+    id: 't1c', name: '金币基础 II', branch: 'target', cost: 2000,
+    effects: [{ kind: 'coinBonus', value: 10 }],
+    requires: ['t1b'], pos: { x: 64, y: 26 },
+    desc: '每次命中再 +10（累计 +15）', icon: '🪙',
+  },
+
 ];
 
 export const ALL_NODES: SkillNode[] = [CORE_NODE, ...SKILLS];
