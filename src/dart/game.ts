@@ -196,9 +196,20 @@ export class Game {
     e.preventDefault();
     // 刮刮乐弹窗打开时不处理投掷
     if (document.getElementById('scratchOverlay')) return;
+    // 屏幕坐标 → 画布坐标。竖屏播放时 .game-root 会 rotate(90deg)，此时
+    // getBoundingClientRect 返回旋转后的轴对齐盒，必须换轴映射，否则点地上的彩票
+    // 会落点错位、点不动（投掷靠自动准星不受影响，所以只有彩票点不响）。与 shooter / lottery 一致。
     const rect = this.canvas.getBoundingClientRect();
-    const cx = (e.clientX - rect.left) * (this.canvas.width / rect.width);
-    const cy = (e.clientY - rect.top) * (this.canvas.height / rect.height);
+    const rotated = !!document.getElementById('gameRoot')?.classList.contains('rotated');
+    let cx: number;
+    let cy: number;
+    if (rotated) {
+      cx = (e.clientY - rect.top) * (this.canvas.width / rect.height);
+      cy = (rect.left + rect.width - e.clientX) * (this.canvas.height / rect.width);
+    } else {
+      cx = (e.clientX - rect.left) * (this.canvas.width / rect.width);
+      cy = (e.clientY - rect.top) * (this.canvas.height / rect.height);
+    }
     const s = this.state.stats();
     for (let i = this.dropItems.length - 1; i >= 0; i--) {
       const d = this.dropItems[i];
@@ -406,7 +417,7 @@ export class Game {
         const sx = d.sx + (d.target.x - d.sx) * t;
         const sy = d.startY + (d.target.y - d.startY) * t - ARC * 4 * t * (1 - t);
         this.lightningBolts.push({ x1: BOARD_CENTER.x + (Math.random()*2-1)*40, y1: 0, x2: BOARD_CENTER.x, y2: BOARD_CENTER.y, life: 300 });
-        juice.shake(5);
+        juice.shake(3); // 闪电命中的震屏减弱，避免频繁触发时太晃
         juice.burst(d.target.x, d.target.y, '#7df9ff', 15);
       }
       if (t >= 1 && !d.hit) {
@@ -664,7 +675,7 @@ export class Game {
     // 手感反馈：音效 + 屏幕震动 + 命中粒子 + 冲击波（宠物稍弱）
     if (points > 0) {
       if (bull) {
-        juice.shake(d.fromPet ? 3 : 7);
+        if (!d.fromPet) juice.shake(4); // 玩家命中中心才震屏（幅值已调小，避免太晃）；宠物不震
         juice.burst(d.target.x, d.target.y, color, d.fromPet ? 10 : 20);
         juice.impact(d.target.x, d.target.y, color, true); // 中心命中：更大的冲击波环（白闪已移除）
         audio.sfx('bull');

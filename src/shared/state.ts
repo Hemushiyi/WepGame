@@ -5,6 +5,20 @@ import { ALL_BATTLE_NODES, BATTLE_NODE_BY_ID } from '../battle/skills';
 import { ALL_LOTTO_DART_NODES, LOTTO_DART_NODE_BY_ID } from '../story/lottoSkills';
 import { ALL_RPS_NODES, RPS_NODE_BY_ID } from '../rps/skills';
 import { ALL_SHOOTER_NODES, SHOOTER_NODE_BY_ID } from '../shooter/skills';
+import {
+  WEAPONS,
+  WEAPON_BY_ID,
+  DEFAULT_WEAPON_ID,
+  patternMaterials,
+  craftableById,
+  assertUniqueRecipes,
+  type CraftMatId,
+  type WeaponDef,
+} from './weapons';
+import { GEARS, GEAR_BY_ID, EMPTY_GEAR_BONUS, type GearSlot, type GearDef, type GearBonus } from './gear';
+
+// 启动时校验所有合成配方两两不同（重复仅 console.error，不影响运行）
+assertUniqueRecipes();
 
 // ===== 游戏存档与派生属性 =====
 
@@ -170,6 +184,11 @@ interface SaveData {
   achvDone?: string[]; // 已解锁成就 id
   dailyLast?: string; // 上次完成每日挑战的日期 YYYY-MM-DD
   meta?: Partial<MetaState>; // 跨关 meta 强化等级（缺省零值）
+  materials?: Partial<Record<CraftMatId, number>>; // 材料库存（基础掉落 + 高级合成）
+  unlockedWeapons?: string[]; // 已合成武器 id（缺省 → 仅铁剑）
+  equippedWeapon?: string; // 当前装备武器 id（缺省 → 铁剑）
+  unlockedGear?: string[]; // 已合成装备 id（缺省空）
+  equippedGear?: Partial<Record<GearSlot, string>>; // 各槽已装备 id（缺省空）
 }
 
 /** 跨关 meta 强化等级（金币天赋 / 每日红利 / 全能体魄），持久化 */
@@ -255,6 +274,17 @@ export class GameState {
   dailyLast = '';
   /** 跨关 meta 强化等级 */
   meta: MetaState = { ...DEFAULT_META };
+  /** 打怪掉落的材料库存（id → 数量） */
+  materials: Partial<Record<CraftMatId, number>> = {};
+  /** 已合成武器 id（默认拥有铁剑） */
+  unlockedWeapons = new Set<string>([DEFAULT_WEAPON_ID]);
+  /** 当前装备武器 id */
+  equippedWeapon: string = DEFAULT_WEAPON_ID;
+  /** 已合成装备 id */
+  unlockedGear = new Set<string>();
+  /** 各槽已装备的装备 id（helm/armor/boots） */
+  equippedGear: Partial<Record<GearSlot, string>> = {};
+  private cachedGearBonus: GearBonus | null = null;
   private cachedStats: DerivedStats | null = null;
   private cachedLottoStats: LottoStats | null = null;
   private cachedBattleStats: BattleStats | null = null;
@@ -304,6 +334,19 @@ export class GameState {
         this.achvDone = new Set(data.achvDone || []);
         this.dailyLast = data.dailyLast || '';
         this.meta = { ...DEFAULT_META, ...(data.meta || {}) };
+        // 材料 / 武器 / 装备（缺省空/仅铁剑）
+        this.materials = (data.materials && typeof data.materials === 'object') ? { ...data.materials } : {};
+        this.unlockedWeapons = new Set([DEFAULT_WEAPON_ID, ...(data.unlockedWeapons || [])]);
+        const eq = data.equippedWeapon;
+        this.equippedWeapon = eq && WEAPON_BY_ID[eq] ? eq : DEFAULT_WEAPON_ID;
+        this.unlockedGear = new Set(data.unlockedGear || []);
+        // 规整装备槽：只保留 GEAR_BY_ID 中存在的 id
+        this.equippedGear = {};
+        const eg = data.equippedGear || {};
+        (Object.keys(eg) as GearSlot[]).forEach((slot) => {
+          const id = eg[slot];
+          if (id && GEAR_BY_ID[id]) this.equippedGear[slot] = id;
+        });
         // 老版本存档迁移成功后，立即以最新版本写回，清掉老 key，下次直读
         if (data.v < 3) {
           this.save();
@@ -341,12 +384,115 @@ export class GameState {
       achvDone: [...this.achvDone],
       dailyLast: this.dailyLast,
       meta: this.meta,
+      materials: this.materials,
+      unlockedWeapons: [...this.unlockedWeapons],
+      equippedWeapon: this.equippedWeapon,
+      unlockedGear: [...this.unlockedGear],
+      equippedGear: { ...this.equippedGear },
     };
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     } catch {
       /* 存储不可用时静默失败 */
     }
+  }
+
+  // ---- 材料 / 武器 / 装备 ----
+  materialCount(id: CraftMatId): number {
+    return this.materials[id] ?? 0;
+  }
+  addMaterial(id: CraftMatId, n: number): void {
+    this.materials[id] = Math.max(0, (this.materials[id] ?? 0) + n);
+  }
+  weaponOwned(id: string): boolean {
+    return this.unlockedWeapons.has(id);
+  }
+  /** 统一合成判定：高级材料 / 武器 / 装备（命中可合成物 + 材料够；武器/装备已拥有则不可再合） */
+  canCraft(id: string): boolean {
+    const c = craftableById(id);
+    if (!c) return false;
+    if ((c.kind === 'weapon' && this.unlockedWeapons.has(id)) || (c.kind === 'gear' && this.unlockedGear.has(id))) return false;
+    const need = patternMaterials(c.recipe);
+    return (Object.keys(need) as CraftMatId[]).every((m) => this.materialCount(m) >= (need[m] ?? 0));
+  }
+  /** 统一合成：扣材料 + 产出（高级材料 +1 / 解锁武器 / 解锁装备）。成功返回 true。图样匹配由 UI 合成台保证。 */
+  craft(id: string): boolean {
+    const c = craftableById(id);
+    if (!c || !this.canCraft(id)) return false;
+    const need = patternMaterials(c.recipe);
+    for (const m of Object.keys(need) as CraftMatId[]) {
+      this.materials[m] = this.materialCount(m) - (need[m] ?? 0);
+    }
+    if (c.kind === 'advanced') {
+      const mid = id as CraftMatId;
+      this.materials[mid] = (this.materials[mid] ?? 0) + 1;
+    } else if (c.kind === 'weapon') {
+      this.unlockedWeapons.add(id);
+    } else {
+      this.unlockedGear.add(id);
+    }
+    this.save();
+    return true;
+  }
+  /** 可合成物种类（UI 区分输出槽样式用） */
+  craftKind(id: string): 'advanced' | 'weapon' | 'gear' | undefined {
+    return craftableById(id)?.kind;
+  }
+  equipWeapon(id: string): void {
+    if (!this.unlockedWeapons.has(id) || !WEAPON_BY_ID[id]) return;
+    this.equippedWeapon = id;
+    this.save();
+  }
+  equippedWeaponDef(): WeaponDef {
+    return WEAPON_BY_ID[this.equippedWeapon] ?? WEAPON_BY_ID[DEFAULT_WEAPON_ID];
+  }
+  /** 所有武器定义（工坊 UI 渲染用） */
+  allWeapons(): WeaponDef[] {
+    return WEAPONS;
+  }
+  // ---- 装备 ----
+  gearOwned(id: string): boolean {
+    return this.unlockedGear.has(id);
+  }
+  /** 装备某槽（同槽自动替换）。id 需属该槽且已拥有。 */
+  equipGear(slot: GearSlot, id: string): void {
+    const g = GEAR_BY_ID[id];
+    if (!this.unlockedGear.has(id) || !g || g.slot !== slot) return;
+    this.equippedGear[slot] = id;
+    this.cachedGearBonus = null;
+    this.save();
+  }
+  /** 卸下某槽 */
+  unequipGear(slot: GearSlot): void {
+    if (!this.equippedGear[slot]) return;
+    delete this.equippedGear[slot];
+    this.cachedGearBonus = null;
+    this.save();
+  }
+  equippedGearDef(slot: GearSlot): GearDef | null {
+    const id = this.equippedGear[slot];
+    return id ? (GEAR_BY_ID[id] ?? null) : null;
+  }
+  /** 汇总三槽装备加成（带缓存；换装时清缓存，battle 进入时重新快照） */
+  equippedGearBonuses(): GearBonus {
+    if (this.cachedGearBonus) return this.cachedGearBonus;
+    const sum: GearBonus = { ...EMPTY_GEAR_BONUS };
+    for (const slot of ['helm', 'armor', 'boots'] as GearSlot[]) {
+      const g = this.equippedGearDef(slot);
+      if (!g) continue;
+      sum.dmgAdd += g.bonus.dmgAdd;
+      sum.hpAdd += g.bonus.hpAdd;
+      sum.critAdd += g.bonus.critAdd;
+      sum.lsAdd += g.bonus.lsAdd;
+      sum.coinAdd += g.bonus.coinAdd;
+      sum.cdAdd += g.bonus.cdAdd;
+    }
+    this.cachedGearBonus = sum;
+    return sum;
+  }
+  /** 所有装备定义（工坊 UI 渲染用） */
+  allGear(): GearDef[] {
+    return GEARS;
   }
 
   /** 计算飞镖关卡派生属性（带缓存） */
@@ -704,6 +850,9 @@ export class GameState {
     this.cachedBattleStats = null;
     this.cachedRpsStats = null;
     this.cachedShooterStats = null;
+    this.unlockedGear = new Set();
+    this.equippedGear = {};
+    this.cachedGearBonus = null;
     try {
       localStorage.removeItem(SAVE_KEY);
       localStorage.removeItem(LEGACY_KEY); // 连同可能残留的老 key 一起清掉，避免复活

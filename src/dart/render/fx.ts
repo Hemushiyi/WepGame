@@ -173,6 +173,8 @@ export function drawDart(env: SceneEnv, dart: Dart): void {
   const tipDark = dart.golden ? '#ffd45e' : PAL['W'];
   const fletch = dart.golden ? PAL['Y'] : dart.fromPet ? PAL['y'] : PAL['r'];
   const fletchDark = dart.golden ? PAL['y'] : dart.fromPet ? PAL['Y'] : PAL['R'];
+  // 宠物飞镖体形更小（1.5×），与玩家飞镖（3×）明显区分。
+  const ds = dart.fromPet ? 1.5 : 3;
 
   // ---- 拖尾：沿速度反方向画 4 段逐渐变淡的残影（命中钉住后不再画）----
   const speed = Math.hypot(dart.target.x - dart.sx, dart.target.y - dart.startY);
@@ -182,8 +184,8 @@ export function drawDart(env: SceneEnv, dart: Dart): void {
     const seed = dartSeed(dart);
     const segCount = 4;
     for (let i = 1; i <= segCount; i++) {
-      // 等长间距小段（2×放大后间距同步翻倍）
-      const dist = i * 4 * 3;
+      // 等长间距小段（间距随镖体缩放 ds 同步变化）
+      const dist = i * 4 * ds;
       const sx = px - ux * dist;
       const sy = py - uy * dist;
       // 透明度随段递减（i 越远越淡）
@@ -205,7 +207,7 @@ export function drawDart(env: SceneEnv, dart: Dart): void {
   ctx.save();
   ctx.translate(px, py);
   ctx.rotate(ang);
-  ctx.scale(3, 3);
+  ctx.scale(ds, ds);
   // 关闭抗锯齿（像素风）
   ctx.imageSmoothingEnabled = false;
 

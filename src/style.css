@@ -109,8 +109,9 @@ body {
   padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0
     max(12px, env(safe-area-inset-left));
   gap: 8px;
-  background: linear-gradient(#1c1640, #140f30);
-  border-bottom: 2px solid #2a2150;
+  background: linear-gradient(#2a4585, #1a2e60);
+  border-bottom: 2px solid #0a1733;
+  box-shadow: inset 0 -2px 0 #3f5fa0;
   z-index: 5;
 }
 
@@ -215,38 +216,61 @@ body {
   display: flex;
 }
 
-/* 关卡选择主页 */
+/* 关卡选择主页：固定顶栏（标题+两个入口按钮）+ 可滚动卡片区 */
 .screen-select {
+  flex-direction: column;
+  background:
+    linear-gradient(rgba(125, 180, 255, 0.06) 1px, transparent 1px) 0 0 / 22px 22px,
+    linear-gradient(90deg, rgba(125, 180, 255, 0.06) 1px, transparent 1px) 0 0 / 22px 22px,
+    radial-gradient(125% 95% at 50% 0%, #21407a 0%, #0b1c40 72%);
+  text-align: center;
+}
+.select-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: max(10px, env(safe-area-inset-top))
+    max(12px, env(safe-area-inset-right)) 6px
+    max(12px, env(safe-area-inset-left));
+}
+.select-title-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* 卡片滚动区：内容短则垂直居中，超出则上下滚动，绝不再被裁切 */
+.select-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  background: #0b0a1f;
-  padding: 16px;
-  text-align: center;
+  gap: 14px;
+  padding: 8px 12px 16px;
 }
-/* 成就按钮（主页右上角） */
+/* 入口按钮（成就 / 强化）：随顶栏排布，不再绝对定位 */
 .achv-btn {
-  position: absolute;
-  top: max(10px, env(safe-area-inset-top));
-  right: max(12px, env(safe-area-inset-right));
-  z-index: 2;
+  flex: 0 0 auto;
   font-family: var(--pixel);
   font-size: 9px;
-  color: var(--accent);
-  background: #1c1640;
-  border: 2px solid #4a3f7a;
-  border-radius: 8px;
+  color: #5a1200;
+  background: linear-gradient(#ffe49a, #ffc24d);
+  border: 2px solid #b8331a;
+  border-radius: 7px;
   padding: 8px 10px;
   cursor: pointer;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.5), 0 3px 0 #74220e;
 }
 .achv-btn:active {
-  transform: translateY(2px);
-}
-/* 第二个顶部按钮（强化）放左上，避免与成就重叠 */
-.achv-btn + .achv-btn {
-  right: auto;
-  left: max(12px, env(safe-area-inset-left));
+  transform: translateY(3px);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.4), 0 0 0 #74220e;
 }
 /* 强化商店 */
 .meta-card {
@@ -423,13 +447,12 @@ body {
   font-size: 18px;
   color: var(--accent);
   letter-spacing: 1px;
-  text-shadow: 0 2px 0 #2a2150;
+  text-shadow: 0 2px 0 #08163a;
 }
 .select-sub {
   font-size: 12px;
   color: var(--ink);
   opacity: 0.7;
-  margin-bottom: 16px;
 }
 .select-footer {
   margin-top: 14px;
@@ -461,52 +484,78 @@ body {
 }
 
 .level-cards {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+  gap: 10px;
   width: 100%;
-  max-width: 540px;
+  max-width: 640px;
 }
 .level-card {
-  width: 158px;
-  min-height: 184px;
+  width: auto;
+  min-height: 134px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 18px 12px;
-  background: linear-gradient(#1c1640, #140f30);
-  border: 3px solid #4a3f7a;
-  border-radius: 14px;
-  color: var(--ink);
+  padding: 12px 10px;
+  background: linear-gradient(#ffe49a, #ffc24d);
+  border: 3px solid #b8331a;
+  border-radius: 10px;
+  color: #5a1200;
   cursor: pointer;
-  transition: transform 0.06s, border-color 0.12s, box-shadow 0.12s;
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -4px 0 rgba(140, 50, 10, 0.28),
+    0 4px 0 #74220e,
+    0 6px 10px rgba(0, 0, 0, 0.35);
+  transition: transform 0.06s, box-shadow 0.12s, filter 0.12s;
 }
 .level-card:hover {
-  border-color: var(--cyan);
-  box-shadow: 0 0 14px rgba(125, 249, 255, 0.25);
+  filter: brightness(1.05);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.6),
+    inset 0 -4px 0 rgba(140, 50, 10, 0.28),
+    0 4px 0 #74220e,
+    0 6px 16px rgba(255, 206, 58, 0.4);
 }
 .level-card:active {
-  transform: translateY(3px);
+  transform: translateY(4px);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 0 rgba(140, 50, 10, 0.28),
+    0 0 0 #74220e,
+    0 1px 4px rgba(0, 0, 0, 0.35);
 }
 .level-card.locked {
   opacity: 0.92;
 }
 .lv-icon {
-  font-size: 42px;
-  filter: drop-shadow(0 2px 0 #000);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 12px;
+  background: linear-gradient(#5a82c4, #345a98);
+  border: 2px solid #1a2e60;
+  box-shadow: inset 0 2px 0 rgba(190, 215, 255, 0.4);
+}
+.px-icon {
+  width: 36px;
+  height: 36px;
+  display: block;
+  filter: drop-shadow(0 1px 0 rgba(0, 0, 0, 0.35));
 }
 .lv-name {
   font-family: var(--pixel);
-  font-size: 13px;
-  color: var(--accent);
+  font-size: 11px;
+  color: #7a1200;
 }
 .lv-desc {
-  font-size: 11px;
-  color: var(--ink);
-  opacity: 0.82;
+  font-size: 10px;
+  color: #5e2208;
+  opacity: 0.9;
   line-height: 1.4;
 }
 .lv-lock {
@@ -515,21 +564,21 @@ body {
 }
 .lv-lock-track {
   height: 8px;
-  background: #0b0a1f;
+  background: #7a3411;
   border-radius: 4px;
   overflow: hidden;
-  border: 1px solid #2a2150;
+  border: 1px solid #4a1808;
 }
 .lv-lock-fill {
   height: 100%;
-  background: var(--cyan);
+  background: #ffe066;
   width: 0%;
 }
 .lv-lock-text {
   font-family: var(--pixel);
   font-size: 9px;
-  color: var(--ink);
-  opacity: 0.85;
+  color: #4a0f00;
+  opacity: 0.95;
   margin-top: 5px;
 }
 
@@ -541,6 +590,778 @@ body {
 /* 打怪关卡：画布铺满（同飞镖） */
 .screen-battle {
   background: #0b0a1f;
+}
+
+/* 打怪技能加成看板：叠在画布左上；pointer-events:none 不挡点屏挥剑 */
+.battle-stats {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 9px;
+  min-width: 180px;
+  max-width: 214px;
+  background: rgba(11, 10, 31, 0.74);
+  border: 2px solid #4a3f7a;
+  border-radius: 9px;
+  pointer-events: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  font-size: 11px;
+  color: var(--ink);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.bs-head {
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: var(--accent);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.bs-count {
+  color: var(--cyan);
+  font-size: 8px;
+}
+.bs-icons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 14px;
+  line-height: 1;
+}
+.bs-ico {
+  position: relative;
+  display: inline-block;
+}
+.bs-badge {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  font-style: normal;
+  font-family: var(--pixel);
+  font-size: 7px;
+  line-height: 1;
+  color: #0b0a1f;
+  background: var(--accent);
+  border: 1px solid #0b0a1f;
+  border-radius: 7px;
+  padding: 1px 3px;
+  min-width: 9px;
+  text-align: center;
+}
+.bs-empty {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.bs-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bs-row {
+  display: grid;
+  grid-template-columns: 48px 1fr 42px;
+  align-items: center;
+  gap: 6px;
+}
+.bs-label {
+  color: var(--muted);
+  white-space: nowrap;
+  font-size: 10px;
+}
+.bs-bar {
+  position: relative;
+  height: 7px;
+  background: #0b0a1f;
+  border: 1px solid #2a2150;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.bs-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 0%;
+  background: linear-gradient(90deg, #7df9ff, #4de0ff);
+}
+.bs-val {
+  text-align: right;
+  color: var(--accent);
+  white-space: nowrap;
+  font-size: 10px;
+}
+
+/* 武器工坊页面 */
+.screen-workshop {
+  background: radial-gradient(125% 95% at 50% 0%, #21407a 0%, #0b1c40 72%);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+/* 覆盖 .screen.active 的 display:flex，改用普通块级滚动容器，
+   避免 flex 居中 + 超高内容时底部（合成台）被裁且滚不到的 bug */
+.screen-workshop.active {
+  display: block;
+}
+.workshop-inner {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: max(14px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  color: var(--ink);
+  text-align: center;
+}
+.ws-back {
+  display: inline-block;
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: #5a1200;
+  background: linear-gradient(#ffe49a, #ffc24d);
+  border: 2px solid #b8331a;
+  border-radius: 7px;
+  padding: 7px 11px;
+  cursor: pointer;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.5), 0 3px 0 #74220e;
+}
+.ws-title {
+  font-family: var(--pixel);
+  font-size: 13px;
+  color: var(--accent);
+  text-shadow: 0 2px 0 #08163a;
+}
+/* 顶栏：返回 / 标题 / 图纸按钮 */
+.ws-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ws-bpbtn {
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: #0b0a1f;
+  background: linear-gradient(#7df9ff, #3fb6c9);
+  border: 2px solid #1a6a7a;
+  border-radius: 7px;
+  padding: 7px 11px;
+  cursor: pointer;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.4), 0 3px 0 #1a6a7a;
+}
+/* 左右分栏：左合成台 / 右背包+装备 */
+/* 左右一体面板：填满宽度、无缝隙、圆角裁剪 */
+.ws-main {
+  display: flex;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  background: rgba(11, 10, 31, 0.5);
+  border: 2px solid #4a3f7a;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.ws-side {
+  flex: 1 1 0;
+  max-width: 280px;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-left: 2px solid #4a3f7a; /* 与左栏的分隔线（一体、无空隙） */
+  text-align: left;
+}
+/* 背包材料：九宫格（3 列） */
+.ws-side .ws-selbar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  margin: 0;
+}
+.ws-side .ws-sel {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+  height: 40px;
+  padding: 3px 2px;
+}
+.ws-sel-ico {
+  font-size: 16px;
+  line-height: 1;
+}
+.ws-side .ws-sel b {
+  font-size: 8px;
+}
+/* 我的武器：独立满宽行（永远可见，便于切换） */
+.ws-owned-wrap {
+  width: 100%;
+  max-width: 760px;
+  margin: 6px auto 0;
+  background: rgba(11, 10, 31, 0.5);
+  border: 2px solid #4a3f7a;
+  border-radius: 10px;
+  padding: 5px 8px;
+  text-align: center;
+}
+.ws-owned-wrap .ws-sec {
+  justify-content: center;
+  margin-bottom: 4px;
+}
+.ws-curtarget {
+  font-family: var(--pixel);
+  font-size: 8px;
+  color: var(--cyan);
+  margin-bottom: 4px;
+}
+/* 图纸覆盖面板 */
+.ws-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 4, 12, 0.66);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 50;
+}
+.ws-overlay-card {
+  width: 100%;
+  max-width: 560px;
+  max-height: 84vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: #140f30;
+  border: 2px solid #4a3f7a;
+  border-radius: 12px;
+  padding: 12px;
+  text-align: center;
+}
+.ws-overlay-head {
+  font-family: var(--pixel);
+  font-size: 10px;
+  color: var(--accent);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.ws-title {
+  font-family: var(--pixel);
+  font-size: 13px;
+  color: var(--accent);
+  text-shadow: 0 2px 0 #08163a;
+}
+.ws-sub {
+  font-size: 11px;
+  color: var(--ink);
+  opacity: 0.75;
+  margin-bottom: 10px;
+}
+.ws-matbar {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  background: rgba(11, 10, 31, 0.5);
+  border: 2px solid #4a3f7a;
+  border-radius: 10px;
+  margin-bottom: 12px;
+}
+.ws-mat {
+  font-size: 14px;
+  color: var(--ink);
+}
+.ws-mat b {
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: var(--cyan);
+  margin-left: 3px;
+}
+.ws-table {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+}
+.ws-selbar {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ws-sel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 16px;
+  color: var(--ink);
+  background: #1c1640;
+  border: 2px solid #4a3f7a;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.ws-sel.active {
+  border-color: var(--cyan);
+  box-shadow: 0 0 8px rgba(125, 249, 255, 0.4);
+}
+.ws-sel b {
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: var(--accent);
+}
+.ws-sel.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ws-craftrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+.ws-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+  grid-template-rows: repeat(3, 36px);
+  gap: 3px;
+}
+.ws-cell {
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+  background: #0b0a1f;
+  border: 2px solid #3a3358;
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+.ws-cell.filled {
+  border-color: var(--cyan);
+  background: #15123a;
+  cursor: grab;
+}
+.ws-cell.drop {
+  border-color: var(--accent);
+  background: #2a2310;
+  box-shadow: 0 0 8px rgba(255, 217, 102, 0.5);
+}
+.ws-ghost {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  font-size: 26px;
+  pointer-events: none;
+  z-index: 1000;
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.6));
+  opacity: 0.92;
+}
+.ws-sel {
+  touch-action: none;
+  cursor: grab;
+}
+.ws-arrow {
+  font-size: 20px;
+  color: var(--muted);
+}
+.ws-out {
+  width: 58px;
+  height: 58px;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+}
+.ws-out.empty {
+  background: #0b0a1f;
+  border: 2px dashed #3a3358;
+  color: var(--muted);
+}
+.ws-out.owned {
+  background: #15123a;
+  border: 2px solid #41ae6f;
+  color: #41ae6f;
+  font-size: 14px;
+}
+.ws-out.ready {
+  background: linear-gradient(#ffe49a, #ffc24d);
+  border: 2px solid #b8331a;
+  color: #0b0a1f;
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(255, 217, 102, 0.5);
+  animation: ws-pulse 0.9s ease-in-out infinite alternate;
+}
+.ws-out.ready span {
+  font-family: var(--pixel);
+  font-size: 7px;
+}
+@keyframes ws-pulse {
+  from { transform: scale(1); }
+  to { transform: scale(1.06); }
+}
+.ws-clear {
+  margin-top: 10px;
+  font-family: var(--pixel);
+  font-size: 8px;
+  color: var(--muted);
+  background: #1c1640;
+  border: 2px solid #4a3f7a;
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+/* 武器图鉴 */
+.ws-wcards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  text-align: left;
+}
+.ws-wcard {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  background: linear-gradient(#1c1640, #140f30);
+  border: 3px solid #4a3f7a;
+  border-radius: 10px;
+  align-items: center;
+}
+.ws-wcard.equipped {
+  border-color: var(--accent);
+  box-shadow: 0 0 14px rgba(255, 217, 102, 0.3);
+}
+.ws-whead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ws-wico {
+  font-size: 20px;
+}
+.ws-wname {
+  font-family: var(--pixel);
+  font-size: 11px;
+  color: var(--accent);
+}
+.ws-wskill {
+  font-size: 10px;
+  color: var(--cyan);
+}
+.ws-pat {
+  display: grid;
+  grid-template-columns: repeat(3, 16px);
+  grid-template-rows: repeat(3, 16px);
+  gap: 2px;
+}
+.ws-pat-cell {
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0a1f;
+  border: 1px solid #2a2150;
+  border-radius: 3px;
+}
+.ws-pat-cell.empty {
+  opacity: 0.3;
+}
+.ws-free {
+  font-size: 9px;
+  color: var(--green);
+}
+.ws-locked {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+/* 工坊分区 + 图纸 + 背包（重排版） */
+.ws-section {
+  background: rgba(11, 10, 31, 0.45);
+  border: 2px solid #4a3f7a;
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.ws-sec {
+  font-family: var(--pixel);
+  font-size: 10px;
+  color: var(--accent);
+  margin-bottom: 7px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ws-sec span {
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 10px;
+  color: var(--muted);
+  font-weight: normal;
+}
+/* 背包材料块：图标 + 数量 + 名称 */
+.ws-sel {
+  flex-direction: column;
+  gap: 2px;
+  min-width: 64px;
+  padding: 6px 8px;
+}
+.ws-sel i {
+  font-style: normal;
+  font-size: 9px;
+  color: var(--muted);
+}
+/* 图纸卡 */
+.ws-bps {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 8px;
+}
+.ws-bp {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 6px;
+  background: #15123a;
+  border: 2px solid #3a3358;
+  border-radius: 9px;
+  cursor: pointer;
+  color: var(--ink);
+}
+.ws-bp.active {
+  border-color: var(--cyan);
+  box-shadow: 0 0 10px rgba(125, 249, 255, 0.4);
+}
+.ws-bp.done {
+  opacity: 0.7;
+}
+.ws-bp-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: var(--accent);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.ws-bp-ico {
+  font-size: 16px;
+}
+.ws-bp-st {
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+.ws-bp-st.ready { color: #41ae6f; background: #123a26; }
+.ws-bp-st.owned { color: var(--cyan); background: #123040; }
+.ws-bp-st.lack { color: #e84753; background: #3a1620; }
+.ws-bp-skill {
+  font-size: 9px;
+  color: var(--cyan);
+}
+.ws-bp-charge {
+  font-size: 9px;
+  color: var(--accent);
+}
+.ws-bp-gear {
+  font-size: 9px;
+  color: #b7b7c4;
+}
+/* 图纸分类标签 */
+.ws-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 8px;
+}
+.ws-tab {
+  flex: 1;
+  padding: 5px 0;
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: var(--muted);
+  background: #1a1730;
+  border: 2px solid #2a2540;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ws-tab.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: #2a2130;
+}
+/* 装备槽行 */
+.ws-gear-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ws-gear-slot {
+  width: 46px;
+  height: 46px;
+  font-size: 22px;
+  background: #1a1730;
+  border: 2px solid #2a2540;
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.1s, transform 0.05s;
+}
+.ws-gear-slot.filled {
+  border-color: var(--cyan);
+  background: #123040;
+}
+.ws-gear-slot:active {
+  transform: translateY(2px);
+}
+.ws-gear-empty {
+  font-size: 13px;
+  opacity: 0.5;
+}
+/* 装备选择弹窗 */
+.ws-gear-card {
+  max-width: 320px;
+}
+.ws-gear-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+.ws-gear-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  background: #1a1730;
+  border: 2px solid #2a2540;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+.ws-gear-pick.cur {
+  border-color: var(--cyan);
+  background: #123040;
+}
+.ws-gp-ico {
+  font-size: 20px;
+}
+.ws-gp-name {
+  font-size: 12px;
+  color: var(--fg, #fff);
+  min-width: 56px;
+}
+.ws-gp-bonus {
+  font-size: 10px;
+  color: var(--accent);
+  flex: 1;
+}
+.ws-gear-uneq {
+  margin-top: 8px;
+  padding: 6px;
+  width: 100%;
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: #e84753;
+  background: #3a1620;
+  border: 2px solid #6a2630;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ws-need {
+  font-size: 10px;
+  color: var(--accent);
+  letter-spacing: 0.5px;
+}
+/* 已拥有武器装备条 */
+.ws-owned {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+.ws-equip {
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: var(--ink);
+  background: #1c1640;
+  border: 2px solid #4a3f7a;
+  border-radius: 7px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+.ws-equip.cur {
+  color: #0b0a1f;
+  background: linear-gradient(#ffe49a, #ffc24d);
+  border-color: #b8331a;
+  cursor: default;
+}
+/* 合成台引导图样 + 错位提示 */
+.ws-guide {
+  opacity: 0.2;
+}
+.ws-cell.wrong {
+  border-color: #e84753;
+  background: #3a1620;
+}
+.ws-act {
+  margin-top: 3px;
+  font-family: var(--pixel);
+  font-size: 9px;
+  color: #0b0a1f;
+  background: linear-gradient(#ffe49a, #ffc24d);
+  border: 2px solid #b8331a;
+  border-radius: 7px;
+  padding: 6px 8px;
+  cursor: pointer;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.5), 0 3px 0 #74220e;
+}
+.ws-act:active {
+  transform: translateY(3px);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.4), 0 0 0 #74220e;
+}
+.ws-act:disabled {
+  color: var(--muted);
+  background: #2a2150;
+  border-color: #4a3f7a;
+  cursor: not-allowed;
+  box-shadow: none;
+  opacity: 0.7;
+}
+.ws-act.ws-craft {
+  background: linear-gradient(#7df9ff, #3fb6c9);
+  border-color: #1a6a7a;
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.4), 0 3px 0 #1a6a7a;
+}
+.ws-act.ws-equipped {
+  background: linear-gradient(#41ae6f, #2f8a55);
+  border-color: #1f5a38;
+  box-shadow: none;
 }
 
 /* 弹幕射击关卡：画布铺满（同飞镖） */
