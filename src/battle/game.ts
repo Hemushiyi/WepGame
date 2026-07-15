@@ -307,6 +307,9 @@ export class Battle {
   private weapon: WeaponDef = WEAPON_BY_ID['sword'];
   /** 当前装备加成快照（头盔/护甲/靴子 三槽汇总；进入场/换装时刷新） */
   private gb: GearBonus = EMPTY_GEAR_BONUS;
+  /** 武器强化等级带来的伤害/冷却倍率（syncLoadout 刷新；1 级 = 1） */
+  private weaponDmgMult = 1;
+  private weaponCdMult = 1;
   /** 远程武器投射物 */
   private bolts: Bolt[] = [];
   /** 陀螺（环绕武器） */
@@ -459,13 +462,16 @@ export class Battle {
   private syncLoadout(): void {
     this.weapon = this.state.equippedWeaponDef();
     this.gb = this.state.equippedGearBonuses();
+    const wl = this.state.weaponLevel(this.weapon.id);
+    this.weaponDmgMult = 1 + 0.12 * (wl - 1); // 每级 +12% 伤害
+    this.weaponCdMult = 1 - 0.03 * (wl - 1); // 每级 -3% 冷却
   }
   // ---- 生效属性（永久技能 + 波次临时增益 + 武器被动 + 装备加成 叠加）----
   private effDamage(): number {
-    return Math.round((this.stats.damage + this.rbDmg + this.gb.dmgAdd) * (this.weapon.passive.dmgMult ?? 1));
+    return Math.round((this.stats.damage + this.rbDmg + this.gb.dmgAdd) * (this.weapon.passive.dmgMult ?? 1) * this.weaponDmgMult);
   }
   private effCooldown(): number {
-    return Math.max(120, Math.round((this.stats.cooldown + this.rbCd + this.gb.cdAdd) * (this.weapon.passive.cdMult ?? 1)));
+    return Math.max(120, Math.round((this.stats.cooldown + this.rbCd + this.gb.cdAdd) * (this.weapon.passive.cdMult ?? 1) * this.weaponCdMult));
   }
   private effMaxHp(): number {
     return this.stats.maxHp + this.rbMaxHp + this.state.metaHP() + this.gb.hpAdd;
@@ -628,7 +634,7 @@ export class Battle {
     const ch = this.weapon.charge;
     const full = level >= 0.999;
     audio.sfx('skill');
-    this.addShake(4 + level * 6);
+    this.addShake(1 + level * 1.5);
     this.addFlash(full ? '#ffd45e' : '#7df9ff', 0.25 + level * 0.25);
     this.addFreeze(40 + level * 50);
     this.addFloater(VW / 2, GROUND_Y - 72, `${ch.icon} ${ch.name}!`, full ? '#ffd45e' : '#7df9ff');
@@ -655,7 +661,7 @@ export class Battle {
         for (const m of this.monsters) {
           if (Math.abs(m.x - cx) <= radius) this.hitMonster(m, dmg, true, 46 * this.effKnockback());
         }
-        this.addShake(6 + level * 6);
+        this.addShake(2 + level * 2);
         break;
       }
       case 'reap': {
@@ -726,11 +732,10 @@ export class Battle {
     }
     this.burst(m.x, GROUND_Y - foeH(m.type) / 2, crit ? 10 : 5, crit ? PAL['y'] : PAL['w']);
     if (crit) {
-      this.addShake(5);
+      this.addShake(1);
       this.addFreeze(50);
       audio.haptic(25);
     } else {
-      this.addShake(2);
       audio.haptic(12);
     }
     this.addFloater(m.x, GROUND_Y - foeH(m.type) - 6, String(dmg), crit ? '#ffd45e' : '#ffffff');
@@ -845,7 +850,7 @@ export class Battle {
     }
     if (chained.length > 0) {
       audio.sfx('jackpot');
-      this.addShake(3);
+      this.addShake(1);
       // 清理被电死的怪物
       for (let i = this.monsters.length - 1; i >= 0; i--) {
         if (this.monsters[i].hp <= 0) this.killMonster(this.monsters[i], i);
@@ -886,7 +891,6 @@ export class Battle {
     audio.sfx(isChest ? 'jackpot' : m.type === 'boss' ? 'jackpot' : this.wave >= 4 ? 'coinBig' : 'coin');
     // 打击感 + 怒气 + 道具掉落
     this.burst(m.x, GROUND_Y - foeH(m.type) / 2, isChest || m.type === 'boss' ? 26 : 8, critKill ? PAL['y'] : PAL[m.type === 'imp' || m.type === 'bomber' ? 'r' : 'g']);
-    this.addShake(isChest || m.type === 'boss' ? 8 : critKill ? 4 : 2);
     if (isChest || m.type === 'boss') {
       this.addFlash('#ffd45e', 0.5);
       this.addFreeze(80);
@@ -941,7 +945,7 @@ export class Battle {
     if (this.shieldCharges > 0) {
       this.shieldCharges--;
       this.playerInvuln = 480;
-      this.addShake(3);
+      this.addShake(1);
       this.burst(this.playerX, GROUND_Y - P_H / 2, 12, PAL['e']);
       this.addFloater(this.playerX, GROUND_Y - P_H - 14, '🛡格挡!', PAL['e']);
       audio.sfx('skill');
@@ -950,7 +954,7 @@ export class Battle {
     this.hp -= n;
     this.playerFlash = 300;
     this.playerInvuln = 720;
-    this.addShake(5);
+    this.addShake(2);
     this.addFlash('#e84753', 0.4);
     this.burst(this.playerX, GROUND_Y - P_H / 2, 10, PAL['A']);
     audio.haptic(45);
@@ -979,6 +983,7 @@ export class Battle {
     this.waveMod = null;
     this.spawnTimer = 500;
     this.nearSpawnsLeft = 3;
+    this.time = 0; // 每局重新计时：难度随时间从 0 开始递增
     this.playerInvuln = 500;
     this.rage = 0;
     this.ultReady = false;
@@ -1034,7 +1039,7 @@ export class Battle {
   // ---------- 打击感（juice）----------
   private addShake(n: number): void {
     if (settings.get().reduceMotion) return;
-    this.shake = Math.min(14, this.shake + n);
+    this.shake = Math.min(5, this.shake + n);
   }
   private addFreeze(ms: number): void {
     if (settings.get().reduceMotion) return;
@@ -1137,7 +1142,7 @@ export class Battle {
     // 剑 / 斧：AoE 环形冲击（裂地斩更强）
     const isSlam = sk === 'slam';
     audio.sfx('jackpot');
-    this.addShake(isSlam ? 16 : 12);
+    this.addShake(isSlam ? 5 : 4);
     this.addFlash('#ffffff', 0.7);
     this.addFreeze(90);
     const cx = this.playerX + 40;
@@ -1269,17 +1274,23 @@ export class Battle {
     }
     if (this.chargeCd > 0) this.chargeCd -= dt;
 
-    // 生成怪物（节奏随机化：基础间隔 × 0.55..1.45 的抖动，偶尔双连刷）
+    // 生成怪物（节奏随机化：基础间隔 × 0.55..1.45 的抖动，偶尔双连刷；时间越久刷得越快）
     this.spawnTimer -= dt;
+    // 空场时压缩下一次刷怪间隔，避免清场后长时间空等
+    if (this.monsters.length === 0) this.spawnTimer = Math.min(this.spawnTimer, 280);
     if (this.spawnTimer <= 0 && this.monsters.length < 10) {
       this.spawnMonster();
-      const base = Math.max(460, 1500 - this.wave * 90);
+      const minutes = this.time / 60000;
+      const base = Math.max(260, 1400 - this.wave * 100 - minutes * 180);
       const spawnMult = this.waveMod ? this.waveMod.spawn : 1;
       this.spawnTimer = base * (0.55 + Math.random() * 0.9) * spawnMult;
-      // 高波次偶尔一次刷两只，制造节奏起伏
-      if (this.wave >= 3 && Math.random() < 0.18 && this.monsters.length < 9) this.spawnMonster();
+      // 后期偶尔一次刷两只，制造节奏起伏（时间越久概率越高）
+      const dualChance = Math.min(0.5, 0.12 + minutes * 0.06);
+      if (this.wave >= 3 && Math.random() < dualChance && this.monsters.length < 9) this.spawnMonster();
     }
 
+    // 屏幕怪物稀疏时给推进加速，缩短"清场后空等怪物走过来"的真空期
+    const sparseBoost = this.monsters.length <= 1 ? 2.5 : this.monsters.length <= 3 ? 1.8 : 1;
     // 怪物推进 + 接触判定
     for (let i = this.monsters.length - 1; i >= 0; i--) {
       const m = this.monsters[i];
@@ -1289,7 +1300,7 @@ export class Battle {
         if (m.fleeTimer <= 0) m.flee = true;
       }
       const dir = m.flee ? 1 : -1;
-      m.x += (dir * m.speed * dt) / 1000;
+      m.x += (dir * m.speed * sparseBoost * dt) / 1000;
       if (m.hitFlash > 0) m.hitFlash -= dt;
       // 精英再生
       if (m.elite === 'regen' && m.hp < m.maxHp) {
@@ -1304,13 +1315,14 @@ export class Battle {
         this.monsters.splice(i, 1);
         continue;
       }
-      // 接触玩家：扣血并自爆（自爆怪/狂暴精英 2 伤；宝箱怪不伤人，碰到就逃）
+      // 接触玩家：扣血并自爆（自爆怪/狂暴精英基础 2 伤；时间越久全体伤害越高。宝箱怪不伤人）
       if (m.type !== 'chest' && m.x - foeW(m.type) / 2 <= this.playerX + 14) {
-        const dmg = m.type === 'bomber' || m.elite === 'brute' ? 2 : 1;
+        const minutes = this.time / 60000;
+        const dmg = (m.type === 'bomber' || m.elite === 'brute' ? 2 : 1) + Math.min(8, Math.floor(minutes * 1.5)); // 时间越久撞伤越高
         this.damagePlayer(dmg);
         if (m.type === 'bomber') {
           this.burst(m.x, GROUND_Y - foeH(m.type) / 2, 18, PAL['O']);
-          this.addShake(7);
+          this.addShake(2);
           this.addFloater(this.playerX, GROUND_Y - P_H + 8, '💥自爆!', '#e84753');
         } else {
           this.addFloater(this.playerX, GROUND_Y - P_H + 8, m.elite === 'brute' ? '💥狂暴!' : '💥', '#e84753');
@@ -1425,52 +1437,70 @@ export class Battle {
     }
   }
 
-  /** 定时刷的普通怪：类型随击杀数升级（史莱姆 → 恶魔 → 岩石巨人） */
-  /** 定时刷的普通怪：类型随击杀数升级（史莱姆 → 恶魔 → 岩石巨人 / 自爆怪） */
+  /** 定时刷的普通怪：种类与强度随【时间】递增——越久越强、种类越多（叠加波次/混沌/精英） */
   private spawnMonster(): void {
-    const k = this.kills;
-    const r = Math.random();
-    let type: FoeType;
-    // 稀有逃跑宝箱怪（wave>=2，~6% 概率替换普通怪）
-    if (this.wave >= 2 && Math.random() < 0.06) {
-      type = 'chest';
-    } else if (k < 5) {
-      type = 'slime';
-    } else if (k < 15) {
-      type = r < 0.6 ? 'slime' : 'imp';
-    } else if (r < 0.35) {
-      type = 'imp';
-    } else if (r < 0.6) {
-      type = 'slime';
-    } else if (r < 0.8) {
-      type = 'golem';
-    } else {
-      type = 'bomber';
-    }
+    const sec = this.time / 1000;
+    const minutes = sec / 60;
     const w = this.wave;
-    // 精英词缀（金色光环怪，wave>=2 起随机出现；宝箱/Boss 不精英）
+
+    // ---- 种类：随时间解锁 + 权重向强怪倾斜（史莱姆渐少，恶魔/巨人/自爆渐多）----
+    let type: FoeType;
+    if (sec > 20 && this.wave >= 2 && Math.random() < 0.06) {
+      type = 'chest'; // 稀有逃跑宝箱怪
+    } else {
+      const weights: [FoeType, number][] = [['slime', Math.max(0.1, 0.7 - sec * 0.008)]];
+      if (sec > 8) weights.push(['imp', 0.4]);
+      if (sec > 28) weights.push(['golem', Math.min(0.4, (sec - 28) * 0.008)]);
+      if (sec > 50) weights.push(['bomber', Math.min(0.35, (sec - 50) * 0.007)]);
+      const total = weights.reduce((s, [, wt]) => s + wt, 0);
+      let roll = Math.random() * total;
+      type = 'slime';
+      for (const [t, wt] of weights) {
+        roll -= wt;
+        if (roll <= 0) {
+          type = t;
+          break;
+        }
+      }
+    }
+
+    // ---- 时间难度倍率（持续递增，封顶防失控）----
+    const hpTimeMult = Math.min(15, 1 + minutes * 2.0); // 每分钟 +200% 血，封顶 15×
+    const speedTimeMult = Math.min(2.0, 1 + minutes * 0.13); // 每分钟 +13% 速，封顶 2×
+
+    // ---- 精英词缀（金色光环怪；时间越久出现概率越高。宝箱/Boss 不精英）----
+    const eliteChance = type === 'chest' ? 0 : Math.min(0.45, 0.14 + minutes * 0.06);
     let elite: Affix | undefined;
-    if (type !== 'chest' && this.wave >= 2 && Math.random() < 0.12) {
+    if (sec > 15 && Math.random() < eliteChance) {
       elite = (['brute', 'regen', 'swift'] as Affix[])[Math.floor(Math.random() * 3)];
     }
+
+    // ---- 基础血量（种类 + 波次）再叠时间倍率 ----
     let hp =
       type === 'chest'
         ? 5 + Math.floor(w * 0.5)
         : type === 'golem'
-          ? 8 + Math.floor(w * 1.4)
+          ? 10 + Math.floor(w * 2.2)
           : type === 'bomber'
-            ? 2 + Math.floor(w * 0.4)
+            ? 3 + Math.floor(w * 0.7)
             : type === 'imp'
-              ? 4 + Math.floor(w * 0.9)
-              : 2 + Math.floor(w * 0.7);
+              ? 5 + Math.floor(w * 1.4)
+              : 3 + Math.floor(w * 1.0);
     if (elite) hp = Math.round(hp * 1.4); // 精英血量更高
     if (type !== 'chest' && this.waveMod) hp = Math.max(1, Math.round(hp * this.waveMod.hp)); // 混沌修饰
-    const base = type === 'chest' ? 70 : type === 'golem' ? 30 : type === 'bomber' ? 80 : type === 'imp' ? 62 : 46;
-    let speed = Math.min(base + w * 2, 105);
+    hp = Math.max(1, Math.round(hp * hpTimeMult)); // 时间强化
+
+    // ---- 速度（种类 + 波次 + 时间）----
+    const base = type === 'chest' ? 70 : type === 'golem' ? 42 : type === 'bomber' ? 100 : type === 'imp' ? 80 : 64;
+    let speed = (base + w * 3.5) * speedTimeMult;
     if (this.waveMod) speed *= this.waveMod.speed; // 混沌修饰
-    if (elite === 'swift') speed = Math.min(speed * 1.6, 150); // 迅捷精英加速
-    // 宝箱怪始终从屏外入场（给玩家反应/追赶时间）；其余前几只就近
-    const x = type === 'chest' || this.nearSpawnsLeft <= 0 ? VW + 30 : Math.round(VW * (0.5 + Math.random() * 0.16));
+    speed = Math.min(speed, 190);
+    if (elite === 'swift') speed = Math.min(speed * 1.6, 245); // 迅捷精英加速
+    // 登场位置：宝箱怪从屏外；其余按密度就近入场，缩短清场后的空走距离
+    let x: number;
+    if (type === 'chest') x = VW + 30;
+    else if (this.monsters.length <= 1) x = Math.round(VW * (0.42 + Math.random() * 0.16)); // 空场：偏近，快速接战
+    else x = Math.round(VW * (0.55 + Math.random() * 0.2)); // 中近距离
     if (type !== 'chest' && this.nearSpawnsLeft > 0) this.nearSpawnsLeft--;
     this.monsters.push({ x, hp, maxHp: hp, speed, type, hitFlash: 0, elite, fleeTimer: type === 'chest' ? 2200 : undefined });
   }
@@ -1933,11 +1963,21 @@ export class Battle {
       ctx.font = "8px 'Press Start 2P', monospace";
       ctx.fillText(`${this.fever ? '🔥 FEVER ' : ''}COMBO ${this.combo}`, VW / 2, 30);
     }
+    // 威胁等级（随存活时间递增：种类更多 / 血量更高 / 伤害更高；越高越红）
+    const dTier = Math.floor(this.time / 18000) + 1;
+    ctx.fillStyle = dTier >= 5 ? PAL['A'] : dTier >= 3 ? PAL['o'] : PAL['m'];
+    ctx.font = "8px 'Press Start 2P', monospace";
+    ctx.fillText(`威胁 Lv.${dTier}`, VW / 2, 56);
 
     // 击杀（右上）
     ctx.textAlign = 'right';
     ctx.fillStyle = PAL['y'];
     ctx.fillText(`KILLS ${this.kills}`, VW - 14, 16);
+    // 存活时间（右上，KILLS 下方）
+    const tSec = Math.floor(this.time / 1000);
+    ctx.fillStyle = PAL['m'];
+    ctx.font = "8px 'Press Start 2P', monospace";
+    ctx.fillText(`⏱ ${Math.floor(tSec / 60)}:${String(tSec % 60).padStart(2, '0')}`, VW - 14, 30);
 
     // 已装备的装备图标（头盔/护甲/靴子，左下）
     const helm = this.state.equippedGearDef('helm');

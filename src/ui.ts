@@ -26,7 +26,7 @@ import {
   type CraftMatId,
   type Craftable,
 } from './shared/weapons';
-import { GEARS, GEAR_BY_ID, GEAR_BY_SLOT, SLOT_DEFS, type GearSlot, type GearBonus } from './shared/gear';
+import { GEARS, GEAR_BY_ID, GEAR_BY_SLOT, SLOT_DEFS, SET_BY_ID, MAX_ITEM_LEVEL, type GearSlot, type GearBonus } from './shared/gear';
 import type { LevelId, SkillNode } from './shared/types';
 
 // ===== 关卡选择 + HUD + 拓扑技能树 UI =====
@@ -773,7 +773,7 @@ export function buildApp(state: GameState): Game {
       const ownedGear = GEAR_BY_SLOT[slot].filter((g) => state.gearOwned(g.id));
       const cur = state.equippedGearDef(slot);
       const items = ownedGear
-        .map((g) => `<button class="ws-gear-pick${cur?.id === g.id ? ' cur' : ''}" data-geqpick="${g.id}"><span class="ws-gp-ico">${g.icon}</span><span class="ws-gp-name">${g.name}</span><span class="ws-gp-bonus">${gearBonusStr(g.bonus)}</span></button>`)
+        .map((g) => `<button class="ws-gear-pick${cur?.id === g.id ? ' cur' : ''}" data-geqpick="${g.id}"><span class="ws-gp-ico">${g.icon}</span><span class="ws-gp-name">${g.name} Lv.${state.gearLevel(g.id)}</span><span class="ws-gp-bonus">${gearBonusStr(g.bonus)}</span></button>`)
         .join('');
       return `<div class="ws-overlay" id="wsGearOverlay"><div class="ws-overlay-card ws-gear-card">` +
         `<div class="ws-overlay-head">${sd.icon} ${sd.name}<button class="ws-bpbtn" id="wsGearClose">✕</button></div>` +
@@ -799,7 +799,9 @@ export function buildApp(state: GameState): Game {
         const w = WEAPONS.find((x) => x.id === c.id)!;
         extra = `<div class="ws-bp-skill">${w.skill.icon} ${w.skill.name}</div><div class="ws-bp-charge">蓄力 ${w.charge.icon} ${w.charge.name}</div>`;
       } else if (c.kind === 'gear') {
-        extra = `<div class="ws-bp-gear">${gearBonusStr(GEAR_BY_ID[c.id].bonus)}</div>`;
+        const gd = GEAR_BY_ID[c.id];
+        const sd = SET_BY_ID[gd.set];
+        extra = `<div class="ws-bp-gear">${sd ? `<span class="ws-set">${sd.icon}${sd.name}套</span> · ` : ''}${gearBonusStr(gd.bonus)}</div>`;
       } else {
         extra = `<div class="ws-bp-charge">高级材料</div>`;
       }
@@ -847,9 +849,10 @@ export function buildApp(state: GameState): Game {
       .filter((w) => state.weaponOwned(w.id))
       .map((w) => {
         const isEq = eq === w.id;
+        const lv = state.weaponLevel(w.id);
         return isEq
-          ? `<button class="ws-equip cur" disabled>${w.icon} ${w.name} ✓</button>`
-          : `<button class="ws-equip" data-equip="${w.id}">${w.icon} ${w.name}</button>`;
+          ? `<button class="ws-equip cur" disabled>${w.icon} ${w.name} Lv.${lv} ✓</button>`
+          : `<button class="ws-equip" data-equip="${w.id}">${w.icon} ${w.name} Lv.${lv}</button>`;
       })
       .join('');
     // 装备槽（头盔/护甲/靴子）
@@ -857,6 +860,38 @@ export function buildApp(state: GameState): Game {
       const g = state.equippedGearDef(s.id);
       return `<button class="ws-gear-slot${g ? ' filled' : ''}" data-slot="${s.id}" title="${s.name}">${g ? g.icon : `<span class="ws-gear-empty">${s.icon}</span>`}</button>`;
     }).join('');
+    // 强化区：当前武器 + 3 装备槽，各列等级/消耗/升级按钮
+    const upgradeRow = (kind: 'weapon' | 'gear', id: string, icon: string, name: string): string => {
+      const lvl = kind === 'weapon' ? state.weaponLevel(id) : state.gearLevel(id);
+      const cost = state.upgradeCost(kind, id);
+      const can = state.canUpgrade(kind, id);
+      const right = !cost
+        ? `<span class="ws-up-max">满级</span>`
+        : `<button class="ws-up-btn${can ? '' : ' disabled'}" data-up="${kind}:${id}"${can ? '' : ' disabled'}>Lv.${lvl}→${lvl + 1}<span>🪙${cost.gold} · ⚙️${cost.fineIron}</span></button>`;
+      return `<div class="ws-upgrade-row"><span class="ws-up-ico">${icon}</span><span class="ws-up-name">${name} <i>Lv.${lvl}</i></span>${right}</div>`;
+    };
+    const eqWeapon = state.equippedWeaponDef();
+    const upgradeRows =
+      upgradeRow('weapon', eqWeapon.id, eqWeapon.icon, eqWeapon.name) +
+      SLOT_DEFS.map((s) => {
+        const g = state.equippedGearDef(s.id);
+        return g
+          ? upgradeRow('gear', g.id, g.icon, g.name)
+          : `<div class="ws-upgrade-row"><span class="ws-up-ico">${s.icon}</span><span class="ws-up-name">${s.name} <i>未装备</i></span><span class="ws-up-max">—</span></div>`;
+      }).join('');
+    // 战力面板（实时总属性）
+    const p = state.effectiveBattleStats();
+    const statsHtml =
+      `<div class="ws-stats">` +
+      `<div class="ws-stat-power">⚔️ 战力 <b>${p.power}</b></div>` +
+      `<div class="ws-stat-grid">` +
+      `<span>伤害 <b>${p.damage}</b></span><span>血量 <b>${p.maxHp}</b></span>` +
+      `<span>暴击 <b>${Math.round(p.crit * 100)}%</b></span><span>吸血 <b>${p.lifesteal}</b></span>` +
+      `<span>攻速 <b>${p.cooldown}ms</b></span><span>金币 <b>+${Math.round(p.coinBonus * 100)}%</b></span>` +
+      `</div>` +
+      `<div class="ws-stat-w">${p.weapon.icon} ${p.weapon.name} Lv.${p.weapon.level} · 蓄力 ${p.weapon.chargeName}</div>` +
+      (p.setActive ? `<div class="ws-stat-set">${p.setActive.icon} ${p.setActive.name}套 (${p.setActive.count}/3) 已激活</div>` : '') +
+      `</div>`;
 
     const targetName = target ? `${target.icon} ${target.name}` : '（点 📜 选图纸）';
     const targetNeed = target ? ` · 需 ${needStr(target.recipe)}` : '';
@@ -872,8 +907,10 @@ export function buildApp(state: GameState): Game {
       `<div class="ws-sec">📦 背包<span>基础+高级材料</span></div>` +
       `<div class="ws-selbar">${invBar}</div>` +
       `</div></div>` +
+      `<div class="ws-stats-wrap">${statsHtml}</div>` +
       `<div class="ws-owned-wrap"><div class="ws-sec">⚔️ 我的武器<span>点选切换装备</span></div><div class="ws-owned">${weapons}</div>` +
       `<div class="ws-sec">🛡️ 装备<span>点选槽位装备</span></div><div class="ws-gear-row">${gearSlots}</div></div>` +
+      `<div class="ws-owned-wrap"><div class="ws-sec">⬆️ 强化<span>消耗 金币+精铁 · 满级 ${MAX_ITEM_LEVEL}</span></div><div class="ws-upgrade">${upgradeRows}</div></div>` +
       (wsBpOpen
         ? `<div class="ws-overlay" id="wsOverlay"><div class="ws-overlay-card">` +
           `<div class="ws-overlay-head">📜 图纸（点选加载到合成台）<button class="ws-bpbtn" id="wsBpClose">✕</button></div>` +
@@ -927,6 +964,16 @@ export function buildApp(state: GameState): Game {
         audio.sfx('skill');
         showToast(`⚔️ 已装备 ${WEAPONS.find((w) => w.id === id)?.name}`);
         renderWorkshop();
+      }),
+    );
+    workshopInner.querySelectorAll<HTMLButtonElement>('[data-up]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const [kind, id] = (b.dataset.up ?? '').split(':') as ['weapon' | 'gear', string];
+        if (state.upgrade(kind, id)) {
+          audio.sfx('skill');
+          showToast('⬆️ 强化成功');
+          renderWorkshop();
+        }
       }),
     );
     workshopInner.querySelectorAll<HTMLButtonElement>('[data-slot]').forEach((b) =>

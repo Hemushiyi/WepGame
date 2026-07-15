@@ -249,6 +249,28 @@ export const WEAPONS: WeaponDef[] = [
     charge: { id: 'judgment', name: '雷霆审判', icon: '🌩️', desc: '蓄力降下更强更长的闪电链，连击多目标' },
     recipe: ['MDM', 'NM.', 'FD.'],
   },
+  {
+    id: 'twinblade',
+    name: '双刃',
+    icon: '🗡️',
+    attack: 'melee',
+    desc: '极速双刃：攻速极快、暴击极高、伤害略低。',
+    passive: { dmgMult: 1.1, cdMult: 0.65, critAdd: 0.25, rangeAdd: 10 },
+    skill: { id: 'whirl', name: '旋风斩', icon: '💢', desc: '对全场怪物大范围伤害 + 击退' },
+    charge: { id: 'beam', name: '剑气斩', icon: '🗡️', desc: '蓄力释放前方穿透剑气，斩穿一路怪物' },
+    recipe: ['FFF', 'FMF', 'F.F'],
+  },
+  {
+    id: 'staff',
+    name: '法杖',
+    icon: '🪄',
+    attack: 'ranged',
+    desc: '远程法球：投射物穿透多目标、暴击较高。',
+    passive: { dmgMult: 1.0, pierce: 3, critAdd: 0.15, projectileSpeed: 600 },
+    skill: { id: 'split', name: '分裂法球', icon: '💢', desc: '同时掷出 3 枚法球扇形散射' },
+    charge: { id: 'arrowstorm', name: '穿透法雨', icon: '✨', desc: '蓄力射出多支高穿透法球，覆盖全场' },
+    recipe: ['MNM', 'NMN', 'M.M'],
+  },
 ];
 
 export const WEAPON_BY_ID: Record<string, WeaponDef> = Object.fromEntries(
