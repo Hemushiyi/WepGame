@@ -148,12 +148,14 @@ export function drawBoard(env: SceneEnv): void {
   // 用两条同心 pixelCircleRing 相近半径相减出 2px 宽的环带感。
   const tripleMid = r3;
   const doubleMid = r4 - 2;
-  // 三倍环（绿 a）
+  // 三倍环（绿 a）—— 加粗到 3px，让倍率色带醒目可辨
   pixelCircleRing(ctx, cx, cy, tripleMid, col('a'));
   pixelCircleRing(ctx, cx, cy, tripleMid - 1, col('a'));
+  pixelCircleRing(ctx, cx, cy, tripleMid - 2, col('a'));
   // 双倍环（红 A）
   pixelCircleRing(ctx, cx, cy, doubleMid, col('A'));
   pixelCircleRing(ctx, cx, cy, doubleMid - 1, col('A'));
+  pixelCircleRing(ctx, cx, cy, doubleMid - 2, col('A'));
 
   // ---------- 6. 钢丝（辐条 + 同心环） ----------
   // 6a. 20 根辐条：每 18 度一根，从圆心到 r4，颜色 c。
@@ -168,10 +170,11 @@ export function drawBoard(env: SceneEnv): void {
   pixelCircleRing(ctx, cx, cy, r3, col('c'));
   pixelCircleRing(ctx, cx, cy, r4, col('c'));
 
-  // ---------- 7. 靶心（仅钢丝圈定位，不填实心，避免与瞄准点双圆心混淆） ----------
-  pixelCircleRing(ctx, cx, cy, centerRadius, col('c'));
-  // 内圈细线
+  // ---------- 7. 靶心：内牛红心 + 外牛绿环（实心填色，让中心一目了然） ----------
   const innerR = Math.max(2, centerRadius - 6);
+  pixelCircle(ctx, cx, cy, centerRadius, col('a')); // 外牛：绿环
+  pixelCircle(ctx, cx, cy, innerR, col('A')); // 内牛：红心
+  pixelCircleRing(ctx, cx, cy, centerRadius, col('c')); // 钢丝圈勾勒边界
   pixelCircleRing(ctx, cx, cy, innerR, col('c'));
 
   // ---------- 8. 高光（盘面左上方沿弧线的亮白点） ----------

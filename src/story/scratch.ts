@@ -53,7 +53,9 @@ export function showScratchOverlay(
     </div>
   `;
   overlay.addEventListener('pointerdown', (e) => e.stopPropagation());
-  document.body.appendChild(overlay);
+  // 挂到 #gameRoot 而非 body：旋转（竖屏横玩）模式下 gameRoot 整体 rotate(90deg)，
+  // 作为其子元素才能跟着旋转，弹窗方向与游戏画面（横屏）一致，否则会以竖屏方向显示。
+  (document.getElementById('gameRoot') || document.body).appendChild(overlay);
 
   const spinBtn = overlay.querySelector('#scratchSpin')! as HTMLButtonElement;
   const msgEl = overlay.querySelector('#scratchMsg')!;

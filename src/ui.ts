@@ -4,7 +4,7 @@ import { Game } from './dart/game';
 import { ALL_NODES, NODE_BY_ID, getEdges } from './dart/skills';
 import { ALL_LOTTO_NODES, LOTTO_NODE_BY_ID, getLottoEdges } from './lottery/skills';
 import { ALL_BATTLE_NODES, BATTLE_NODE_BY_ID, getBattleEdges } from './battle/skills';
-import { Battle, MODIFIERS, type Modifier } from './battle/game';
+import { Battle, MODIFIERS, type Modifier, type RunBuffSummary } from './battle/game';
 import { ALL_RPS_NODES, RPS_NODE_BY_ID, getRpsEdges } from './rps/skills';
 import { RpsBattle } from './rps/game';
 import { ALL_SHOOTER_NODES, SHOOTER_NODE_BY_ID, getShooterEdges } from './shooter/skills';
@@ -14,6 +14,19 @@ import { StoryMode } from './story/story';
 import { ALL_LOTTO_DART_NODES, LOTTO_DART_NODE_BY_ID, getLottoDartEdges } from './story/lottoSkills';
 import { audio } from './shared/audio';
 import { settings } from './shared/settings';
+import {
+  MATERIALS,
+  ADVANCED_MATERIALS,
+  CRAFT_MAT_BY_ID,
+  PATTERN_CHAR,
+  patternMaterials,
+  findCraftable,
+  craftableById,
+  WEAPONS,
+  type CraftMatId,
+  type Craftable,
+} from './shared/weapons';
+import { GEARS, GEAR_BY_ID, GEAR_BY_SLOT, SLOT_DEFS, SET_BY_ID, MAX_ITEM_LEVEL, type GearSlot, type GearBonus } from './shared/gear';
 import type { LevelId, SkillNode } from './shared/types';
 
 // ===== 关卡选择 + HUD + 拓扑技能树 UI =====
@@ -42,6 +55,180 @@ function svgEl(tag: string, attrs: Record<string, string> = {}): SVGElement {
   return el;
 }
 
+// ===== 关卡图标：统一像素画 =====
+// 共用一套暖色调色板（橙 / 黄 / 红 + 暖白），与入口页主色一致；
+// 用深红当轮廓替代黑色，整体不再出现冷暗色。在固定网格上用原语描点 → 输出 crispEdges SVG。
+const PX = {
+  o: '#a8201a', // 深红（轮廓，替代黑）
+  g: '#ffce3a', // 金黄
+  y: '#fff0a8', // 浅黄 / 高光
+  c: '#ff8a1a', // 橙
+  r: '#e8362f', // 红
+  p: '#ff6a3d', // 橙红
+  w: '#fff3df', // 暖白
+  m: '#c97a33', // 暖棕
+  e: '#ffb347', // 浅橙
+  i: '#ff7a1a', // 深橙
+  t: '#e89a4a', // 暖肤棕
+  d: '#7a3411', // 暖棕面板
+} as const;
+
+interface PxApi {
+  set: (x: number, y: number, c: string) => void;
+  rect: (x: number, y: number, w: number, h: number, c: string) => void;
+  disc: (cx: number, cy: number, r: number, c: string) => void;
+  line: (x0: number, y0: number, x1: number, y1: number, c: string) => void;
+  frame: (x: number, y: number, w: number, h: number, c: string) => void;
+}
+
+/** 像素画布：先填后描边（Map 保留最后写入者 = 后绘制覆盖先绘制），再拼成 crispEdges SVG */
+function pxArt(size: number, draw: (api: PxApi) => void): string {
+  const px = new Map<string, string>();
+  const set = (x: number, y: number, c: string) => {
+    if (x < 0 || y < 0 || x >= size || y >= size || !c) return;
+    px.set(`${x},${y}`, c);
+  };
+  const rect = (x: number, y: number, w: number, h: number, c: string) => {
+    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) set(x + i, y + j, c);
+  };
+  const disc = (cx: number, cy: number, r: number, c: string) => {
+    for (let y = -r; y <= r; y++)
+      for (let x = -r; x <= r; x++) if (x * x + y * y <= r * r) set(cx + x, cy + y, c);
+  };
+  const line = (x0: number, y0: number, x1: number, y1: number, c: string) => {
+    let dx = Math.abs(x1 - x0);
+    let dy = -Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    let x = x0;
+    let y = y0;
+    for (;;) {
+      set(x, y, c);
+      if (x === x1 && y === y1) break;
+      const e2 = 2 * err;
+      if (e2 >= dy) {
+        err += dy;
+        x += sx;
+      }
+      if (e2 <= dx) {
+        err += dx;
+        y += sy;
+      }
+    }
+  };
+  const frame = (x: number, y: number, w: number, h: number, c: string) => {
+    rect(x, y, w, 1, c);
+    rect(x, y + h - 1, w, 1, c);
+    rect(x, y, 1, h, c);
+    rect(x + w - 1, y, 1, h, c);
+  };
+  draw({ set, rect, disc, line, frame });
+  let body = '';
+  for (const [k, c] of px) {
+    const [x, y] = k.split(',');
+    body += `<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`;
+  }
+  return `<svg class="px-icon" viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">${body}</svg>`;
+}
+
+const ICONS: Record<string, string> = {
+  // 飞镖：同心靶 + 插入的镖
+  dart: pxArt(15, (a) => {
+    a.disc(7, 7, 7, PX.o);
+    a.disc(7, 7, 6, PX.c);
+    a.disc(7, 7, 4, PX.w);
+    a.disc(7, 7, 3, PX.r);
+    a.disc(7, 7, 1, PX.g);
+    a.line(12, 3, 9, 6, PX.g); // 镖杆
+    a.set(8, 6, PX.r); // 镖尖
+    a.set(13, 2, PX.r);
+    a.set(12, 2, PX.g); // 尾翼
+  }),
+  // 彩票站：老虎机（柜体 + 三转轮 + 拉杆）
+  lotto: pxArt(15, (a) => {
+    a.frame(2, 3, 11, 10, PX.o); // 柜体
+    a.rect(3, 4, 9, 8, PX.d);
+    a.frame(4, 5, 7, 4, PX.o); // 转轮窗
+    a.rect(5, 6, 2, 2, PX.r); // 红
+    a.rect(7, 6, 2, 2, PX.g); // 金
+    a.rect(9, 6, 2, 2, PX.c); // 青
+    a.rect(12, 2, 1, 4, PX.m); // 拉杆
+    a.rect(11, 1, 3, 1, PX.m); // 拉杆球
+    a.rect(3, 12, 9, 1, PX.o); // 出币口
+  }),
+  // 打怪场：交叉双剑 + 红宝石
+  battle: pxArt(15, (a) => {
+    a.line(3, 3, 11, 11, PX.w);
+    a.line(4, 4, 10, 10, PX.w); // 左上→右下 白刃（加粗）
+    a.line(11, 3, 3, 11, PX.c);
+    a.line(10, 4, 4, 10, PX.c); // 右上→左下 青刃
+    a.rect(5, 7, 5, 1, PX.g); // 护手
+    a.set(7, 7, PX.r); // 中心红宝石
+    a.set(2, 2, PX.g);
+    a.set(13, 2, PX.g);
+    a.set(2, 13, PX.g);
+    a.set(13, 13, PX.g); // 四端柄头
+  }),
+  // 剧情模式：摊开的书
+  story: pxArt(15, (a) => {
+    a.rect(1, 4, 6, 8, PX.w); // 左页
+    a.rect(8, 4, 6, 8, PX.w); // 右页
+    a.frame(1, 4, 6, 8, PX.o);
+    a.frame(8, 4, 6, 8, PX.o);
+    a.rect(7, 4, 1, 8, PX.o); // 书脊
+    a.line(3, 6, 5, 6, PX.m);
+    a.line(3, 8, 5, 8, PX.m);
+    a.line(3, 10, 5, 10, PX.m); // 左页文字
+    a.line(9, 6, 11, 6, PX.m);
+    a.line(9, 8, 11, 8, PX.m);
+    a.line(9, 10, 11, 10, PX.m); // 右页文字
+  }),
+  // 锤剪布：拳头（拳为该玩法标志）
+  rps: pxArt(15, (a) => {
+    a.disc(7, 7, 5, PX.o);
+    a.disc(7, 7, 4, PX.t); // 拳体
+    a.disc(4, 9, 2, PX.o);
+    a.disc(4, 9, 1, PX.t); // 拇指
+    a.rect(4, 12, 7, 2, PX.c); // 腕带
+    a.rect(4, 12, 7, 1, PX.o);
+    a.set(5, 5, PX.t);
+    a.set(7, 5, PX.t);
+    a.set(9, 5, PX.t); // 指节凸起
+  }),
+  // 每日挑战：礼盒
+  daily: pxArt(15, (a) => {
+    a.rect(3, 7, 9, 6, PX.r); // 盒身
+    a.frame(3, 7, 9, 6, PX.o);
+    a.rect(2, 5, 11, 3, PX.r); // 盒盖
+    a.frame(2, 5, 11, 3, PX.o);
+    a.rect(7, 5, 1, 8, PX.g); // 竖丝带
+    a.rect(3, 9, 9, 1, PX.g); // 横丝带
+    a.disc(6, 4, 1, PX.g);
+    a.disc(8, 4, 1, PX.g); // 蝴蝶结
+    a.set(7, 4, PX.y); // 结
+  }),
+  // 弹幕射击：上行战机 + 尾焰
+  shooter: pxArt(15, (a) => {
+    a.set(7, 1, PX.c); // 机首
+    a.rect(6, 2, 3, 6, PX.c); // 机身
+    a.rect(7, 4, 1, 2, PX.w); // 驾驶舱
+    a.set(4, 7, PX.c);
+    a.set(5, 7, PX.c);
+    a.set(5, 8, PX.c); // 左翼
+    a.set(10, 7, PX.c);
+    a.set(9, 7, PX.c);
+    a.set(9, 8, PX.c); // 右翼
+    a.rect(7, 8, 1, 2, PX.r); // 尾焰
+    a.set(7, 10, PX.y);
+    a.rect(6, 2, 1, 6, PX.o); // 机身轮廓
+    a.rect(8, 2, 1, 6, PX.o);
+    a.set(6, 1, PX.o);
+    a.set(8, 1, PX.o);
+  }),
+};
+
+
 export function buildApp(state: GameState): Game {
   const app = document.getElementById('app')!;
 
@@ -52,6 +239,7 @@ export function buildApp(state: GameState): Game {
         <span class="stat" id="coins">🪙 <b>0</b></span>
         <span class="stat" id="score" hidden>🎯 <b>0</b></span>
         <span class="stat" id="combo" hidden>🔥 <b>x1.0</b></span>
+        <span class="stat" id="mats" hidden></span>
       </div>
       <div class="hud-title">PIXEL DART · 像素飞镖</div>
       <div class="hud-right">
@@ -67,18 +255,23 @@ export function buildApp(state: GameState): Game {
     <div class="screens" id="screens">
       <!-- 关卡选择主页 -->
       <div class="screen screen-select active" id="screenSelect">
-        <div class="select-title">选择关卡 <span id="angelBadge" hidden>👼🏆</span></div>
-        <div class="select-sub">点选一个关卡进入</div>
-        <button class="achv-btn" id="openAchv" title="成就">🏆 成就</button>
-        <button class="achv-btn" id="openMeta" title="强化">🛒 强化</button>
+        <div class="select-header">
+          <button class="achv-btn" id="openMeta" title="强化">🛒 强化</button>
+          <div class="select-title-wrap">
+            <div class="select-title">选择关卡 <span id="angelBadge" hidden>👼🏆</span></div>
+            <div class="select-sub">点选一个关卡进入</div>
+          </div>
+          <button class="achv-btn" id="openAchv" title="成就">🏆 成就</button>
+        </div>
+        <div class="select-scroll">
         <div class="level-cards">
           <button class="level-card" id="cardDart">
-            <span class="lv-icon">🎯</span>
+            <span class="lv-icon">${ICONS.dart}</span>
             <span class="lv-name">飞镖场</span>
             <span class="lv-desc">投掷飞镖赚金币 · 连击倍率</span>
           </button>
           <button class="level-card" id="cardLotto">
-            <span class="lv-icon">🎰</span>
+            <span class="lv-icon">${ICONS.lotto}</span>
             <span class="lv-name">彩票站</span>
             <span class="lv-desc" id="lottoCardDesc">刮刮乐 · 博取奖金</span>
             <div class="lv-lock" id="lottoCardLock" hidden>
@@ -87,35 +280,41 @@ export function buildApp(state: GameState): Game {
             </div>
           </button>
           <button class="level-card" id="cardBattle">
-            <span class="lv-icon">⚔️</span>
+            <span class="lv-icon">${ICONS.battle}</span>
             <span class="lv-name">打怪场</span>
             <span class="lv-desc">横版打怪 · 点屏挥剑赚金币</span>
           </button>
           <button class="level-card" id="cardStory">
-            <span class="lv-icon">📖</span>
+            <span class="lv-icon">${ICONS.story}</span>
             <span class="lv-name">剧情模式</span>
             <span class="lv-desc">跟随故事引导 · 探索游戏世界</span>
           </button>
           <button class="level-card" id="cardRps">
-            <span class="lv-icon">✊</span>
+            <span class="lv-icon">${ICONS.rps}</span>
             <span class="lv-name">锤剪布</span>
             <span class="lv-desc">读心格斗 · 读懂暗示克敌</span>
           </button>
           <button class="level-card daily" id="cardDaily">
-            <span class="lv-icon">🎁</span>
+            <span class="lv-icon">${ICONS.daily}</span>
             <span class="lv-name">每日挑战</span>
             <span class="lv-desc" id="dailyDesc">每天一次 · 随机修饰词挑战</span>
           </button>
           <button class="level-card" id="cardShooter">
-            <span class="lv-icon">🚀</span>
+            <span class="lv-icon">${ICONS.shooter}</span>
             <span class="lv-name">弹幕射击</span>
             <span class="lv-desc">拖动战机 · 自动开火躲弹</span>
+          </button>
+          <button class="level-card" id="cardWorkshop">
+            <span class="lv-icon">${ICONS.battle}</span>
+            <span class="lv-name">武器工坊</span>
+            <span class="lv-desc">用打怪掉的材料合成/切换武器</span>
           </button>
         </div>
         <div class="select-footer" id="selectFooter" hidden>
           <span class="final-angel">👼</span>
           <span class="final-text">🎉 恭喜你完成最终成就！🎉</span>
           <span class="final-angel">👼</span>
+        </div>
         </div>
       </div>
 
@@ -127,6 +326,7 @@ export function buildApp(state: GameState): Game {
       <!-- 打怪关卡 -->
       <div class="screen screen-battle" id="screenBattle">
         <canvas id="battleCanvas"></canvas>
+        <div class="battle-stats" id="battleStats"></div>
         <button class="ult-btn" id="battleUlt" disabled title="怒气满后释放旋风斩"><span class="ult-ico">💢</span><span class="ult-lbl">旋风斩</span></button>
         <div class="wave-pick" id="wavePick" hidden>
           <div class="wave-pick-title">🔥 波次奖励 · 3 选 1</div>
@@ -155,6 +355,11 @@ export function buildApp(state: GameState): Game {
 
       <!-- 剧情模式 -->
       <div class="screen screen-story" id="screenStory"></div>
+
+      <!-- 武器工坊 -->
+      <div class="screen screen-workshop" id="screenWorkshop">
+        <div class="workshop-inner" id="workshopInner"></div>
+      </div>
     </div>
 
     <div class="modal" id="skillModal" aria-hidden="true">
@@ -176,7 +381,7 @@ export function buildApp(state: GameState): Game {
           <button class="btn-zoom" id="zoomReset" title="重置视图" aria-label="重置视图">⟳</button>
         </div>
         <div class="tree-wrap">
-          <svg id="tree" viewBox="-8 -6 124 92" preserveAspectRatio="xMidYMid meet"></svg>
+          <svg id="tree" viewBox="-8 -8 124 118" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
         <div class="detail" id="detail">
           <div class="detail-name" id="detailName">点选一个节点</div>
@@ -233,6 +438,7 @@ export function buildApp(state: GameState): Game {
   const coinsEl = app.querySelector<HTMLSpanElement>('#coins b')!;
   const scoreEl = app.querySelector<HTMLSpanElement>('#score b')!;
   const scoreStat = app.querySelector<HTMLSpanElement>('#score')!;
+  const matsEl = app.querySelector<HTMLSpanElement>('#mats')!;
   const modalCoinsEl = app.querySelector<HTMLSpanElement>('#modalCoins')!;
   const modalProgressEl = app.querySelector<HTMLSpanElement>('#modalProgress')!;
   const footEarnedEl = app.querySelector<HTMLSpanElement>('#footEarned')!;
@@ -287,6 +493,8 @@ export function buildApp(state: GameState): Game {
   const screenBattle = app.querySelector<HTMLDivElement>('#screenBattle')!;
   const screenRps = app.querySelector<HTMLDivElement>('#screenRps')!;
   const screenShooter = app.querySelector<HTMLDivElement>('#screenShooter')!;
+  const screenWorkshop = app.querySelector<HTMLDivElement>('#screenWorkshop')!;
+  const workshopInner = app.querySelector<HTMLDivElement>('#workshopInner')!;
   const homeBtn = app.querySelector<HTMLButtonElement>('#homeBtn')!;
   const skillBtn = app.querySelector<HTMLButtonElement>('#skillBtn')!;
 
@@ -342,6 +550,7 @@ export function buildApp(state: GameState): Game {
   // ---- 打怪（页面，挂 #screenBattle 的画布）----
   const battleCanvas = app.querySelector<HTMLCanvasElement>('#battleCanvas')!;
   const battleUltBtn = app.querySelector<HTMLButtonElement>('#battleUlt')!;
+  const battleStatsEl = app.querySelector<HTMLDivElement>('#battleStats')!;
   const wavePick = app.querySelector<HTMLDivElement>('#wavePick')!;
   const wavePickChoices = app.querySelector<HTMLDivElement>('#wavePickChoices')!;
   const battle = new Battle(battleCanvas, state, {
@@ -372,8 +581,55 @@ export function buildApp(state: GameState): Game {
       refreshDaily();
       go('select');
     },
+    onBuffs: (s) => setBattleBuffs(s),
+    onMaterials: () => refreshMaterials(),
   });
   battleUltBtn.addEventListener('click', () => battle.ultimate());
+
+  // ---- 打怪本局增益看板：波次 3 选 1 累计的临时增益（图标 + 参数进度条）----
+  // 数据由 Battle 在 start()/选完增益后通过 onBuffs 回调推送。
+  function setBattleBuffs(s: RunBuffSummary): void {
+    const clamp = (v: number) => Math.max(0, Math.min(1, v));
+    // 进度条相对各增益的“里程碑”软上限（本局可累加，封顶 100%）。
+    const rows = [
+      { ico: '⚔️', name: '伤害', pct: clamp(s.dmg / 12), val: '+' + s.dmg },
+      { ico: '⚡', name: '攻速', pct: clamp(-s.cd / 360), val: (s.cd < 0 ? '+' + -s.cd + 'ms' : '0') },
+      { ico: '❤️', name: '血量', pct: clamp(s.maxHp / 120), val: '+' + s.maxHp },
+      { ico: '🩸', name: '吸血', pct: clamp(s.lifesteal / 5), val: '+' + s.lifesteal },
+      { ico: '💥', name: '暴击', pct: clamp(s.crit / 0.75), val: '+' + Math.round(s.crit * 100) + '%' },
+      { ico: '💰', name: '金币', pct: clamp(s.coin / 1), val: '+' + Math.round(s.coin * 100) + '%' },
+      { ico: '💢', name: '怒气', pct: clamp(s.rage / 60), val: '+' + s.rage },
+    ];
+    // 同类增益叠成一个图标 + 右下角数量徽标，避免越拿越多撑爆看板
+    const groups = new Map<string, { icon: string; name: string; count: number }>();
+    for (const p of s.picks) {
+      const g = groups.get(p.icon);
+      if (g) g.count++;
+      else groups.set(p.icon, { icon: p.icon, name: p.name, count: 1 });
+    }
+    const icons = [...groups.values()]
+      .map(
+        (g) =>
+          `<span class="bs-ico" title="${g.name}${g.count > 1 ? ` ×${g.count}` : ''}">${g.icon}${
+            g.count > 1 ? `<i class="bs-badge">${g.count}</i>` : ''
+          }</span>`,
+      )
+      .join('');
+    battleStatsEl.innerHTML =
+      `<div class="bs-head">🎯 本局增益${s.picks.length ? ` <span class="bs-count">×${s.picks.length}</span>` : ''}</div>` +
+      (icons ? `<div class="bs-icons">${icons}</div>` : `<div class="bs-empty">清波次后 3 选 1 获得增益</div>`) +
+      '<div class="bs-rows">' +
+      rows
+        .filter((r) => r.pct > 0) // 仅列出本局已获得的增益
+        .map(
+          (r) =>
+            `<div class="bs-row"><span class="bs-label">${r.ico} ${r.name}</span>` +
+            `<div class="bs-bar"><div class="bs-fill" style="width:${Math.round(r.pct * 100)}%"></div></div>` +
+            `<span class="bs-val">${r.val}</span></div>`,
+        )
+        .join('') +
+      '</div>';
+  }
 
   // ---- 每日挑战 ----
   /** 按今日日期确定性选一个修饰词（同一天所有人相同） */
@@ -452,9 +708,372 @@ export function buildApp(state: GameState): Game {
     }
   }
 
+  // ---- 武器工坊：合成台（拖拽摆放材料）+ 武器图鉴/装备 ----
+  const wsGrid: (CraftMatId | null)[] = Array(9).fill(null);
+  let wsDrag: { mat: CraftMatId; fromCell: number | null; ghost: HTMLDivElement } | null = null;
+  function wsPlaced(mat: CraftMatId): number {
+    return wsGrid.filter((x) => x === mat).length;
+  }
+  function wsClearGrid(): void {
+    for (let i = 0; i < 9; i++) wsGrid[i] = null;
+  }
+  let wsTarget: string | null = null; // 当前选中的图纸（合成台显示其引导图样）
+  let wsBpOpen = false; // 图纸面板是否展开
+  let wsTab: 'advanced' | 'weapon' | 'gear' = 'advanced'; // 图纸面板当前分类
+  let wsGearOpen: GearSlot | null = null; // 装备槽选择弹窗（哪个槽）
+  function renderWorkshop(): void {
+    const eq = state.equippedWeapon;
+    const ico = (m: CraftMatId | null) => (m ? CRAFT_MAT_BY_ID[m].icon : '');
+    const invMats = [...MATERIALS, ...ADVANCED_MATERIALS] as { id: CraftMatId; name: string; icon: string }[];
+    // 选中的图纸（高级材料/武器/装备）及其每格目标材料
+    const target = wsTarget ? craftableById(wsTarget) ?? null : null;
+    const targetAt = (i: number): CraftMatId | null => {
+      if (!target) return null;
+      const r = Math.floor(i / 3);
+      const c = i % 3;
+      return PATTERN_CHAR[target.recipe[r][c]] ?? null;
+    };
+    // 背包（基础+高级材料库存，九宫格拖拽源）
+    const invBar = invMats.map((m) => {
+      const avail = state.materialCount(m.id) - wsPlaced(m.id);
+      const dis = avail <= 0 ? ' disabled' : '';
+      return `<button class="ws-sel${dis}" data-mat="${m.id}" title="${m.name} · 拖到合成台"><span class="ws-sel-ico">${m.icon}</span><b>${avail}</b></button>`;
+    }).join('');
+    // 图纸：每张可合成武器的图样 + 状态；点选 → 合成台显示引导
+    const patHtml = (pat: string[]): string => {
+      let h = '<div class="ws-pat">';
+      for (let r = 0; r < 3; r++)
+        for (let c = 0; c < 3; c++) {
+          const m = PATTERN_CHAR[pat[r][c]] ?? null;
+          h += `<span class="ws-pat-cell${m ? '' : ' empty'}">${ico(m)}</span>`;
+        }
+      return h + '</div>';
+    };
+    // 材料数量摘要：图样里每种材料各需要几个
+    const needStr = (pat: string[]): string => {
+      const need = patternMaterials(pat);
+      return Object.entries(need)
+        .map(([m, n]) => `${CRAFT_MAT_BY_ID[m as CraftMatId].icon}×${n}`)
+        .join(' ');
+    };
+    // 装备加成摘要
+    const gearBonusStr = (b: GearBonus): string => {
+      const parts: string[] = [];
+      if (b.dmgAdd) parts.push(`伤害+${b.dmgAdd}`);
+      if (b.hpAdd) parts.push(`血量+${b.hpAdd}`);
+      if (b.critAdd) parts.push(`暴击+${Math.round(b.critAdd * 100)}%`);
+      if (b.lsAdd) parts.push(`吸血+${b.lsAdd}`);
+      if (b.coinAdd) parts.push(`金币+${Math.round(b.coinAdd * 100)}%`);
+      if (b.cdAdd) parts.push(`攻速${b.cdAdd}ms`);
+      return parts.join(' / ') || '—';
+    };
+    // 装备槽选择弹窗
+    const gearPickOverlay = (slot: GearSlot): string => {
+      const sd = SLOT_DEFS.find((s) => s.id === slot)!;
+      const ownedGear = GEAR_BY_SLOT[slot].filter((g) => state.gearOwned(g.id));
+      const cur = state.equippedGearDef(slot);
+      const items = ownedGear
+        .map((g) => `<button class="ws-gear-pick${cur?.id === g.id ? ' cur' : ''}" data-geqpick="${g.id}"><span class="ws-gp-ico">${g.icon}</span><span class="ws-gp-name">${g.name} Lv.${state.gearLevel(g.id)}</span><span class="ws-gp-bonus">${gearBonusStr(g.bonus)}</span></button>`)
+        .join('');
+      return `<div class="ws-overlay" id="wsGearOverlay"><div class="ws-overlay-card ws-gear-card">` +
+        `<div class="ws-overlay-head">${sd.icon} ${sd.name}<button class="ws-bpbtn" id="wsGearClose">✕</button></div>` +
+        `<div class="ws-gear-list">${items || '<div class="ws-need">尚未合成该槽装备</div>'}</div>` +
+        (cur ? `<button class="ws-gear-uneq" data-unequip="${slot}">卸下当前</button>` : '') +
+        `</div></div>`;
+    };
+    // 通用图纸卡片（高级材料/武器/装备）
+    const cardHtml = (c: Craftable): string => {
+      let st: string, stc: string;
+      if (c.kind === 'advanced') {
+        const can = state.canCraft(c.id);
+        st = can ? '可合成' : '缺材料';
+        stc = can ? 'ready' : 'lack';
+      } else {
+        const owned = c.kind === 'weapon' ? state.weaponOwned(c.id) : state.gearOwned(c.id);
+        const can = state.canCraft(c.id);
+        st = owned ? '已拥有' : can ? '可合成' : '缺材料';
+        stc = owned ? 'owned' : can ? 'ready' : 'lack';
+      }
+      let extra = '';
+      if (c.kind === 'weapon') {
+        const w = WEAPONS.find((x) => x.id === c.id)!;
+        extra = `<div class="ws-bp-skill">${w.skill.icon} ${w.skill.name}</div><div class="ws-bp-charge">蓄力 ${w.charge.icon} ${w.charge.name}</div>`;
+      } else if (c.kind === 'gear') {
+        const gd = GEAR_BY_ID[c.id];
+        const sd = SET_BY_ID[gd.set];
+        extra = `<div class="ws-bp-gear">${sd ? `<span class="ws-set">${sd.icon}${sd.name}套</span> · ` : ''}${gearBonusStr(gd.bonus)}</div>`;
+      } else {
+        extra = `<div class="ws-bp-charge">高级材料</div>`;
+      }
+      return `<button class="ws-bp${wsTarget === c.id ? ' active' : ''}${stc === 'owned' ? ' done' : ''}" data-bp="${c.id}">
+        <div class="ws-bp-head"><span class="ws-bp-ico">${c.icon}</span><span class="ws-bp-name">${c.name}</span><span class="ws-bp-st ${stc}">${st}</span></div>
+        ${patHtml(c.recipe)}
+        <div class="ws-need">需 ${needStr(c.recipe)}</div>
+        ${extra}
+      </button>`;
+    };
+    const tabList: Craftable[] =
+      wsTab === 'weapon'
+        ? WEAPONS.filter((w) => w.recipe).map((w) => craftableById(w.id)!)
+        : wsTab === 'gear'
+          ? GEARS.map((g) => craftableById(g.id)!)
+          : ADVANCED_MATERIALS.map((a) => craftableById(a.id)!);
+    const blueprints = tabList.map(cardHtml).join('');
+    const tabsHtml = `<div class="ws-tabs">` +
+      `<button class="ws-tab${wsTab === 'advanced' ? ' active' : ''}" data-tab="advanced">材料</button>` +
+      `<button class="ws-tab${wsTab === 'weapon' ? ' active' : ''}" data-tab="weapon">武器</button>` +
+      `<button class="ws-tab${wsTab === 'gear' ? ' active' : ''}" data-tab="gear">装备</button>` +
+      `</div>`;
+    // 3×3 合成台（含目标图纸的淡色引导）
+    const grid = `<div class="ws-grid">${wsGrid
+      .map((m, i) => {
+        const t = targetAt(i);
+        const guide = !m && t ? `<span class="ws-guide">${ico(t)}</span>` : '';
+        const wrong = m && t && m !== t ? ' wrong' : '';
+        return `<button class="ws-cell${m ? ' filled' : ''}${wrong}" data-cell="${i}">${ico(m)}${guide}</button>`;
+      })
+      .join('')}</div>`;
+    // 输出：摆放匹配某可合成物 → 给出产物
+    const matched = findCraftable(wsGrid);
+    let outSlot: string;
+    if (matched) {
+      const owned = matched.kind === 'weapon' ? state.weaponOwned(matched.id) : matched.kind === 'gear' ? state.gearOwned(matched.id) : false;
+      if (owned) outSlot = `<div class="ws-out owned">${matched.icon}<span>已拥有</span></div>`;
+      else outSlot = `<button class="ws-out ready" data-craft="${matched.id}">${matched.icon}<span>合成</span></button>`;
+    } else {
+      outSlot = `<div class="ws-out empty">${target ? target.icon : '?'}</div>`;
+    }
+    // 我的武器（装备）
+    const weapons = state
+      .allWeapons()
+      .filter((w) => state.weaponOwned(w.id))
+      .map((w) => {
+        const isEq = eq === w.id;
+        const lv = state.weaponLevel(w.id);
+        return isEq
+          ? `<button class="ws-equip cur" disabled>${w.icon} ${w.name} Lv.${lv} ✓</button>`
+          : `<button class="ws-equip" data-equip="${w.id}">${w.icon} ${w.name} Lv.${lv}</button>`;
+      })
+      .join('');
+    // 装备槽（头盔/护甲/靴子）
+    const gearSlots = SLOT_DEFS.map((s) => {
+      const g = state.equippedGearDef(s.id);
+      return `<button class="ws-gear-slot${g ? ' filled' : ''}" data-slot="${s.id}" title="${s.name}">${g ? g.icon : `<span class="ws-gear-empty">${s.icon}</span>`}</button>`;
+    }).join('');
+    // 强化区：当前武器 + 3 装备槽，各列等级/消耗/升级按钮
+    const upgradeRow = (kind: 'weapon' | 'gear', id: string, icon: string, name: string): string => {
+      const lvl = kind === 'weapon' ? state.weaponLevel(id) : state.gearLevel(id);
+      const cost = state.upgradeCost(kind, id);
+      const can = state.canUpgrade(kind, id);
+      const right = !cost
+        ? `<span class="ws-up-max">满级</span>`
+        : `<button class="ws-up-btn${can ? '' : ' disabled'}" data-up="${kind}:${id}"${can ? '' : ' disabled'}>Lv.${lvl}→${lvl + 1}<span>🪙${cost.gold} · ⚙️${cost.fineIron}</span></button>`;
+      return `<div class="ws-upgrade-row"><span class="ws-up-ico">${icon}</span><span class="ws-up-name">${name} <i>Lv.${lvl}</i></span>${right}</div>`;
+    };
+    const eqWeapon = state.equippedWeaponDef();
+    const upgradeRows =
+      upgradeRow('weapon', eqWeapon.id, eqWeapon.icon, eqWeapon.name) +
+      SLOT_DEFS.map((s) => {
+        const g = state.equippedGearDef(s.id);
+        return g
+          ? upgradeRow('gear', g.id, g.icon, g.name)
+          : `<div class="ws-upgrade-row"><span class="ws-up-ico">${s.icon}</span><span class="ws-up-name">${s.name} <i>未装备</i></span><span class="ws-up-max">—</span></div>`;
+      }).join('');
+    // 战力面板（实时总属性）
+    const p = state.effectiveBattleStats();
+    const statsHtml =
+      `<div class="ws-stats">` +
+      `<div class="ws-stat-power">⚔️ 战力 <b>${p.power}</b></div>` +
+      `<div class="ws-stat-grid">` +
+      `<span>伤害 <b>${p.damage}</b></span><span>血量 <b>${p.maxHp}</b></span>` +
+      `<span>暴击 <b>${Math.round(p.crit * 100)}%</b></span><span>吸血 <b>${p.lifesteal}</b></span>` +
+      `<span>攻速 <b>${p.cooldown}ms</b></span><span>金币 <b>+${Math.round(p.coinBonus * 100)}%</b></span>` +
+      `</div>` +
+      `<div class="ws-stat-w">${p.weapon.icon} ${p.weapon.name} Lv.${p.weapon.level} · 蓄力 ${p.weapon.chargeName}</div>` +
+      (p.setActive ? `<div class="ws-stat-set">${p.setActive.icon} ${p.setActive.name}套 (${p.setActive.count}/3) 已激活</div>` : '') +
+      `</div>`;
+
+    const targetName = target ? `${target.icon} ${target.name}` : '（点 📜 选图纸）';
+    const targetNeed = target ? ` · 需 ${needStr(target.recipe)}` : '';
+    workshopInner.innerHTML =
+      `<div class="ws-top"><button class="ws-back" id="wsBack">🏠 返回</button>` +
+      `<div class="ws-title">⚒️ 武器工坊</div>` +
+      `<button class="ws-bpbtn" id="wsBpBtn">📜 图纸</button></div>` +
+      `<div class="ws-main">` +
+      `<div class="ws-table"><div class="ws-curtarget">合成台 · ${targetName}${targetNeed}</div>` +
+      `<div class="ws-craftrow">${grid}<div class="ws-arrow">➜</div>${outSlot}</div>` +
+      `<button class="ws-clear" id="wsClear">↺ 清空合成台</button></div>` +
+      `<div class="ws-side">` +
+      `<div class="ws-sec">📦 背包<span>基础+高级材料</span></div>` +
+      `<div class="ws-selbar">${invBar}</div>` +
+      `</div></div>` +
+      `<div class="ws-stats-wrap">${statsHtml}</div>` +
+      `<div class="ws-owned-wrap"><div class="ws-sec">⚔️ 我的武器<span>点选切换装备</span></div><div class="ws-owned">${weapons}</div>` +
+      `<div class="ws-sec">🛡️ 装备<span>点选槽位装备</span></div><div class="ws-gear-row">${gearSlots}</div></div>` +
+      `<div class="ws-owned-wrap"><div class="ws-sec">⬆️ 强化<span>消耗 金币+精铁 · 满级 ${MAX_ITEM_LEVEL}</span></div><div class="ws-upgrade">${upgradeRows}</div></div>` +
+      (wsBpOpen
+        ? `<div class="ws-overlay" id="wsOverlay"><div class="ws-overlay-card">` +
+          `<div class="ws-overlay-head">📜 图纸（点选加载到合成台）<button class="ws-bpbtn" id="wsBpClose">✕</button></div>` +
+          `${tabsHtml}<div class="ws-bps">${blueprints}</div></div></div>`
+        : '') +
+      (wsGearOpen ? gearPickOverlay(wsGearOpen) : '');
+
+    // 事件
+    workshopInner.querySelector('#wsBack')!.addEventListener('click', () => go('select'));
+    workshopInner.querySelector('#wsBpBtn')!.addEventListener('click', () => {
+      wsBpOpen = true;
+      renderWorkshop();
+    });
+    const bpClose = workshopInner.querySelector('#wsBpClose');
+    if (bpClose) bpClose.addEventListener('click', () => { wsBpOpen = false; renderWorkshop(); });
+    const overlay = workshopInner.querySelector('#wsOverlay');
+    if (overlay)
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) { wsBpOpen = false; renderWorkshop(); }
+      });
+    workshopInner.querySelector('#wsClear')!.addEventListener('click', () => {
+      wsClearGrid();
+      renderWorkshop();
+    });
+    workshopInner.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((b) =>
+      b.addEventListener('click', () => { wsTab = b.dataset.tab as typeof wsTab; renderWorkshop(); }),
+    );
+    workshopInner.querySelectorAll<HTMLButtonElement>('[data-bp]').forEach((b) =>
+      b.addEventListener('click', () => {
+        wsTarget = wsTarget === b.dataset.bp ? null : (b.dataset.bp ?? null);
+        wsBpOpen = false;
+        renderWorkshop();
+      }),
+    );
+    workshopInner.querySelectorAll<HTMLButtonElement>('[data-craft]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const id = b.dataset.craft!;
+        const name = craftableById(id)?.name ?? id;
+        if (state.craft(id)) {
+          audio.sfx('unlock');
+          showToast(`✅ 合成成功：${name}`);
+          wsClearGrid();
+          renderWorkshop();
+        }
+      }),
+    );
+    workshopInner.querySelectorAll<HTMLButtonElement>('[data-equip]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const id = b.dataset.equip!;
+        state.equipWeapon(id);
+        audio.sfx('skill');
+        showToast(`⚔️ 已装备 ${WEAPONS.find((w) => w.id === id)?.name}`);
+        renderWorkshop();
+      }),
+    );
+    workshopInner.querySelectorAll<HTMLButtonElement>('[data-up]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const [kind, id] = (b.dataset.up ?? '').split(':') as ['weapon' | 'gear', string];
+        if (state.upgrade(kind, id)) {
+          audio.sfx('skill');
+          showToast('⬆️ 强化成功');
+          renderWorkshop();
+        }
+      }),
+    );
+    workshopInner.querySelectorAll<HTMLButtonElement>('[data-slot]').forEach((b) =>
+      b.addEventListener('click', () => { wsGearOpen = b.dataset.slot as GearSlot; renderWorkshop(); }),
+    );
+    const gearClose = workshopInner.querySelector('#wsGearClose');
+    if (gearClose) gearClose.addEventListener('click', () => { wsGearOpen = null; renderWorkshop(); });
+    const gearOverlay = workshopInner.querySelector('#wsGearOverlay');
+    if (gearOverlay)
+      gearOverlay.addEventListener('click', (e) => { if (e.target === gearOverlay) { wsGearOpen = null; renderWorkshop(); } });
+    workshopInner.querySelectorAll<HTMLButtonElement>('[data-geqpick]').forEach((b) =>
+      b.addEventListener('click', () => {
+        const id = b.dataset.geqpick!;
+        const slot = wsGearOpen!;
+        state.equipGear(slot, id);
+        audio.sfx('skill');
+        showToast(`🛡️ 已装备 ${GEAR_BY_ID[id].name}`);
+        wsGearOpen = null;
+        renderWorkshop();
+      }),
+    );
+    const uneq = workshopInner.querySelector<HTMLButtonElement>('[data-unequip]');
+    if (uneq)
+      uneq.addEventListener('click', () => {
+        state.unequipGear(uneq.dataset.unequip as GearSlot);
+        audio.sfx('skill');
+        wsGearOpen = null;
+        renderWorkshop();
+      });
+  }
+
+  // ---- 合成台拖拽（pointer 通用，支持触屏）----
+  const wsMoveGhost = (x: number, y: number): void => {
+    if (wsDrag) {
+      wsDrag.ghost.style.left = `${x}px`;
+      wsDrag.ghost.style.top = `${y}px`;
+    }
+  };
+  const wsOnDown = (e: PointerEvent): void => {
+    if (wsDrag) return;
+    const el = (e.target as HTMLElement | null)?.closest('[data-mat], .ws-cell.filled') as HTMLElement | null;
+    if (!el) return;
+    let mat: CraftMatId | null = null;
+    let fromCell: number | null = null;
+    if (el.dataset.mat) {
+      // 从材料选择条拖出
+      mat = el.dataset.mat as CraftMatId;
+      if (state.materialCount(mat) - wsPlaced(mat) <= 0) return; // 无可用库存
+    } else if (el.dataset.cell != null) {
+      // 从已有格子拖出（取起）
+      const i = Number(el.dataset.cell);
+      mat = wsGrid[i];
+      if (!mat) return;
+      fromCell = i;
+      wsGrid[i] = null;
+      el.classList.remove('filled');
+      el.textContent = '';
+    }
+    if (!mat) return;
+    e.preventDefault();
+    const ghost = document.createElement('div');
+    ghost.className = 'ws-ghost';
+    ghost.textContent = CRAFT_MAT_BY_ID[mat].icon;
+    document.body.appendChild(ghost);
+    wsDrag = { mat, fromCell, ghost };
+    wsMoveGhost(e.clientX, e.clientY);
+  };
+  const wsOnMove = (e: PointerEvent): void => {
+    if (!wsDrag) return;
+    wsMoveGhost(e.clientX, e.clientY);
+    workshopInner.querySelectorAll('.ws-cell.drop').forEach((c) => c.classList.remove('drop'));
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const cell = el?.closest('.ws-cell') as HTMLElement | null;
+    if (cell) cell.classList.add('drop');
+  };
+  const wsOnUp = (e: PointerEvent): void => {
+    if (!wsDrag) return;
+    const d = wsDrag;
+    wsDrag = null;
+    d.ghost.remove();
+    workshopInner.querySelectorAll('.ws-cell.drop').forEach((c) => c.classList.remove('drop'));
+    const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const cellEl = el?.closest('.ws-cell') as HTMLElement | null;
+    if (cellEl && cellEl.dataset.cell != null) {
+      const i = Number(cellEl.dataset.cell);
+      // 替换：目标格无论是否占用，都放入拖拽材料；原占用材料回库存（不写回任何格子）。
+      // 从选择条拖入需有可用库存；从格子拖入（已取起）则必然够。
+      if (d.fromCell != null || state.materialCount(d.mat) - wsPlaced(d.mat) > 0) wsGrid[i] = d.mat;
+    }
+    // 丢到合成台外：来自格子的已取起 → 回库存；来自选择条 → 无事
+    renderWorkshop();
+  };
+  workshopInner.addEventListener('pointerdown', wsOnDown);
+  window.addEventListener('pointermove', wsOnMove);
+  window.addEventListener('pointerup', wsOnUp);
+  window.addEventListener('pointercancel', wsOnUp);
+
   // ---- 屏幕路由 ----
-  let current: 'select' | 'dart' | 'lotto' | 'battle' | 'story' | 'rps' | 'shooter' = 'select';
-  function go(name: 'select' | 'dart' | 'lotto' | 'battle' | 'story' | 'rps' | 'shooter'): void {
+  let current: 'select' | 'dart' | 'lotto' | 'battle' | 'story' | 'rps' | 'shooter' | 'workshop' = 'select';
+  function go(name: 'select' | 'dart' | 'lotto' | 'battle' | 'story' | 'rps' | 'shooter' | 'workshop'): void {
     if (name === current) return;
     const prev = current;
     current = name;
@@ -465,6 +1084,8 @@ export function buildApp(state: GameState): Game {
     screenStory.classList.toggle('active', name === 'story');
     screenRps.classList.toggle('active', name === 'rps');
     screenShooter.classList.toggle('active', name === 'shooter');
+    screenWorkshop.classList.toggle('active', name === 'workshop');
+    if (name === 'workshop') renderWorkshop();
     // 飞镖循环：进入才跑，离开即停（省 CPU、避免在隐藏画布上空投）
     if (prev === 'dart') game.stop();
     if (name === 'dart') {
@@ -497,17 +1118,19 @@ export function buildApp(state: GameState): Game {
     if (prev === 'lotto') lottery.leave();
     if (name === 'lotto') lottery.enter();
     // 背景音乐：随关卡切换曲风（选择页=菜单曲）
-    audio.setMusicMood(name === 'select' ? 'menu' : (name as 'dart' | 'lotto' | 'battle' | 'rps' | 'shooter'));
+    audio.setMusicMood(name === 'select' || name === 'workshop' ? 'menu' : (name as 'dart' | 'lotto' | 'battle' | 'rps' | 'shooter'));
     // HUD：🏠/技能按钮仅在关卡页显示；score/combo 仅飞镖页
     homeBtn.hidden = name === 'select';
-    skillBtn.hidden = name === 'select' || name === 'story';
+    skillBtn.hidden = name === 'select' || name === 'story' || name === 'workshop';
     scoreStat.hidden = name !== 'dart';
     comboEl.hidden = name !== 'dart';
+    matsEl.hidden = name !== 'battle' && name !== 'workshop';
     refreshCoins();
   }
 
   app.querySelector<HTMLButtonElement>('#cardDart')!.addEventListener('click', () => go('dart'));
   app.querySelector<HTMLButtonElement>('#cardBattle')!.addEventListener('click', () => go('battle'));
+  app.querySelector<HTMLButtonElement>('#cardWorkshop')!.addEventListener('click', () => go('workshop'));
   app.querySelector<HTMLButtonElement>('#cardStory')!.addEventListener('click', () => go('story'));
   app.querySelector<HTMLButtonElement>('#cardRps')!.addEventListener('click', () => go('rps'));
   app.querySelector<HTMLButtonElement>('#cardShooter')!.addEventListener('click', () => go('shooter'));
@@ -550,16 +1173,27 @@ export function buildApp(state: GameState): Game {
   (window as any).__navHome = () => { document.getElementById('scratchOverlay')?.remove(); go('select'); };
   homeBtn.addEventListener('click', (e) => { e.stopPropagation(); e.stopImmediatePropagation(); go('select'); });
   homeBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.stopImmediatePropagation(); });
-  skillBtn.addEventListener('click', () => openSkill(current));
+  skillBtn.addEventListener('click', () => {
+    if (current !== 'workshop') openSkill(current);
+  });
 
   // 金币变动时同步 HUD、彩票页面与彩票解锁状态（飞镖 earn 时保持新鲜）。
   // refreshCoins 是函数声明（提升），lottery / refreshLottoLock 在运行期已初始化。
   function refreshCoins(): void {
     refreshLottoTreeBtn();
     updateCoins();
+    refreshMaterials();
     checkAchievements();
     lottery.syncCoins();
     refreshLottoLock();
+  }
+  /** 顶部 HUD 材料数量（打怪/工坊页可见） */
+  function refreshMaterials(): void {
+    const basic = MATERIALS.map((m) => `${m.icon}<b>${state.materialCount(m.id)}</b>`).join(' ');
+    const adv = ADVANCED_MATERIALS.filter((a) => state.materialCount(a.id) > 0)
+      .map((a) => `${a.icon}<b>${state.materialCount(a.id)}</b>`)
+      .join(' ');
+    matsEl.innerHTML = adv ? `${basic} · ${adv}` : basic;
   }
 
   // ============ 成就系统 ============
@@ -967,6 +1601,113 @@ export function buildApp(state: GameState): Game {
     return 'locked';
   }
 
+  // ---- 自适应技能树布局：完全由依赖关系（requires）推导，不依赖手写 pos ----
+  // 后续新增技能只要填 requires，这里自动分层排版、保证不重叠。
+  const X_GAP = 14; // 同层节点水平间距（> 节点外环直径 ~9.4，必然不压盖）
+  const LAYER_GAP = 16; // 相邻层级垂直间距（含成本标签余量）
+  let layoutKey = '';
+  let layoutL = new Map<string, { x: number; y: number }>();
+  let layoutVB = { x: -8, y: -8, w: 124, h: 112 };
+  function computeAutoLayout(): void {
+    const nodes = spec.nodes;
+    const parent = new Map<string, string[]>();
+    const child = new Map<string, string[]>();
+    for (const n of nodes) {
+      parent.set(n.id, n.requires ? [...n.requires] : []);
+      child.set(n.id, []);
+    }
+    for (const e of spec.edges) {
+      const arr = child.get(e.from);
+      if (arr) arr.push(e.to);
+    }
+    // 层级 = 从根（无前置）出发的最长路径长度；拓扑代数。
+    const depth = new Map<string, number>();
+    const vis = new Set<string>();
+    const gd = (id: string): number => {
+      const hit = depth.get(id);
+      if (hit != null) return hit;
+      if (vis.has(id)) return 0; // 环保护（技能树为 DAG，正常不触发）
+      vis.add(id);
+      const ps = parent.get(id) ?? [];
+      let d = 0;
+      if (ps.length) d = 1 + Math.max(...ps.map(gd));
+      vis.delete(id);
+      depth.set(id, d);
+      return d;
+    };
+    for (const n of nodes) gd(n.id);
+    const maxD = nodes.length ? Math.max(0, ...depth.values()) : 0;
+    const layers: string[][] = Array.from({ length: maxD + 1 }, () => []);
+    for (const n of nodes) layers[depth.get(n.id) ?? 0].push(n.id);
+    // 同层 x：先按出现序均分，再做若干趟重心（barycenter）上下扫描，
+    // 让子节点尽量落在父节点正下方、减少连线交叉；最终按秩均分 → 同层必然不重叠。
+    const X = new Map<string, number>();
+    const rankify = (layer: string[]) => {
+      const n = layer.length;
+      layer.forEach((id, i) => X.set(id, (i - (n - 1) / 2) * X_GAP));
+    };
+    for (const l of layers) rankify(l);
+    const avg = (ids: string[]) => {
+      const xs = ids.map((p) => X.get(p)).filter((u): u is number => u != null);
+      return xs.length ? xs.reduce((a, c) => a + c, 0) / xs.length : null;
+    };
+    for (let it = 0; it < 8; it++) {
+      for (let d = 1; d <= maxD; d++) {
+        layers[d] = layers[d]
+          .map((id) => ({ id, b: avg(parent.get(id) ?? []) ?? X.get(id)! }))
+          .sort((a, b) => a.b - b.b)
+          .map((x) => x.id);
+        rankify(layers[d]);
+      }
+      for (let d = maxD - 1; d >= 0; d--) {
+        layers[d] = layers[d]
+          .map((id) => ({ id, b: avg(child.get(id) ?? []) ?? X.get(id)! }))
+          .sort((a, b) => a.b - b.b)
+          .map((x) => x.id);
+        rankify(layers[d]);
+      }
+    }
+    const L = new Map<string, { x: number; y: number }>();
+    let minx = Infinity;
+    let maxx = -Infinity;
+    let miny = Infinity;
+    let maxy = -Infinity;
+    for (const n of nodes) {
+      const x = X.get(n.id) ?? 0;
+      const y = (depth.get(n.id) ?? 0) * LAYER_GAP;
+      L.set(n.id, { x, y });
+      if (x < minx) minx = x;
+      if (x > maxx) maxx = x;
+      if (y < miny) miny = y;
+      if (y > maxy) maxy = y;
+    }
+    layoutL = L;
+    // 每棵树按自身包围盒定 viewBox（树大小差异大，固定框装不下）：四周留 padding
+    // 容纳外环(~5)与底部成本标签(~9)。
+    const pad = 10;
+    layoutVB = {
+      x: minx - pad,
+      y: miny - pad,
+      w: Math.max(1, maxx - minx) + pad * 2,
+      h: Math.max(1, maxy - miny) + pad * 2,
+    };
+  }
+  // 布局只依赖图结构（每棵树固定），按 spec 缓存；切树时重算并标记 fresh 以重置缩放。
+  function ensureLayout(): {
+    L: Map<string, { x: number; y: number }>;
+    vb: { x: number; y: number; w: number; h: number };
+    fresh: boolean;
+  } {
+    const key = spec.level + ':' + treeTab;
+    let fresh = false;
+    if (key !== layoutKey) {
+      computeAutoLayout();
+      layoutKey = key;
+      fresh = true;
+    }
+    return { L: layoutL, vb: layoutVB, fresh };
+  }
+
   function renderTree(): void {
     svg.innerHTML = '';
     // 包裹组：所有边与节点都渲染进 #treeContent，便于整体施加视图变换。
@@ -974,17 +1715,23 @@ export function buildApp(state: GameState): Game {
     svg.appendChild(content);
     const edges = spec.edges;
 
+    // 自适应布局：由依赖图自动分层排版（见 ensureLayout），不依赖手写 pos，
+    // 新增节点自动入位且不重叠。每棵树按自身包围盒设 viewBox，切树时重置缩放。
+    const { L, vb, fresh } = ensureLayout();
+    svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+    if (fresh) resetView();
+    const lp = (id: string) => L.get(id)!;
+
     // 边
     for (const e of edges) {
-      const a = spec.nodeById[e.from];
       const b = spec.nodeById[e.to];
       const active = spec.owned(e.from) && spec.owned(e.to);
       const half = spec.owned(e.from) && !spec.owned(e.to) && spec.prereqMet(e.to);
       const line = svgEl('line', {
-        x1: String(a.pos.x),
-        y1: String(a.pos.y),
-        x2: String(b.pos.x),
-        y2: String(b.pos.y),
+        x1: String(L.get(e.from)!.x),
+        y1: String(L.get(e.from)!.y),
+        x2: String(L.get(e.to)!.x),
+        y2: String(L.get(e.to)!.y),
       });
       const bColor = spec.branches[b.branch]?.color ?? '#888';
       line.setAttribute(
@@ -1005,7 +1752,8 @@ export function buildApp(state: GameState): Game {
       const st = nodeState(node.id);
       const color = spec.branches[node.branch]?.color ?? '#888';
       const g = svgEl('g', { class: 'node' });
-      g.setAttribute('transform', `translate(${node.pos.x},${node.pos.y})`);
+      const p = lp(node.id);
+      g.setAttribute('transform', `translate(${p.x},${p.y})`);
       g.style.cursor = st === 'locked' ? 'not-allowed' : 'pointer';
 
       const r = node.id === spec.nodes[0].id ? 4.4 : 3.7;
@@ -1098,8 +1846,8 @@ export function buildApp(state: GameState): Game {
       // owned 显示 ✓、canBuy 显示金色价、availPoor 显示暗灰价（让玩家知道目标价）。
       if (!(st === 'locked' && node.cost > 0)) {
         const cost = svgEl('text', {
-          x: String(node.pos.x),
-          y: String(node.pos.y + r + 4.0),
+          x: String(p.x),
+          y: String(p.y + r + 4.0),
           'text-anchor': 'middle',
           'font-size': '2.6',
           // 深色描边底（paint-order 先描边后填充）：连线穿过文字时仍可读。

@@ -21,6 +21,8 @@ import { audio } from '../shared/audio';
 import { settings } from '../shared/settings';
 import type { BattleStats } from '../shared/types';
 import type { GameState } from '../shared/state';
+import { WEAPON_BY_ID, MATERIAL_BY_ID, type WeaponDef, type MaterialId } from '../shared/weapons';
+import { EMPTY_GEAR_BONUS, type GearBonus } from '../shared/gear';
 
 // ---------- 怪物精灵（均 12 宽，scale=2） ----------
 const SLIME: string[] = [
@@ -165,6 +167,85 @@ interface RunBuff {
   name: string;
   icon: string;
 }
+/** 远程武器（飞镖/箭）投射物 */
+interface Bolt {
+  x: number;
+  y: number;
+  vx: number; // px/ms
+  dmg: number;
+  crit: boolean;
+  life: number;
+  pierce: number; // 最多命中数（1=命中即消失，>1=穿透）
+  hit: Set<Monster>; // 已命中过的怪物（穿透不重复打）
+}
+/** 陀螺：绕玩家旋转的飞行物，撞击怪物（每怪一次） */
+interface Top {
+  ang: number;
+  radius: number;
+  spin: number; // 角速度 rad/ms
+  life: number;
+  dmg: number;
+  crit: boolean;
+  hit: Set<Monster>;
+}
+/** 闪电链段（权杖）：两点之间一条短命闪电，纯视觉 */
+interface Zap {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  life: number;
+}
+/** 蓄力光束（剑气/突刺/裂地波）：向前飞行，穿透命中每个怪物一次 */
+interface Beam {
+  x: number;
+  y: number;
+  vx: number; // px/ms
+  half: number; // 命中半宽（横向判定半径）
+  dmg: number;
+  crit: boolean;
+  life: number;
+  hit: Set<Monster>;
+  variant: 'beam' | 'thrust' | 'wave';
+  knock: number;
+}
+/** 扩散冲击环（陨石砸/死亡收割）：纯视觉，半径随寿命增长 */
+interface ShockRing {
+  x: number;
+  y: number;
+  r: number;
+  maxR: number;
+  life: number;
+  maxLife: number;
+  color: string;
+}
+/** 掉落到地上的材料（需手动滑动拾取，不自动进背包） */
+interface MatPickup {
+  x: number;
+  y: number;
+  vy: number; // px/ms（下落）
+  mat: MaterialId;
+  n: number;
+  landed: boolean;
+  life: number;
+  bob: number;
+}
+/** 本局累计的波次增益快照（3 选 1 累加结果），供 UI 看板渲染进度条 */
+export interface RunBuffSummary {
+  dmg: number;
+  cd: number; // 累计冷却变化（负数 = 提速）
+  maxHp: number;
+  lifesteal: number;
+  crit: number;
+  coin: number;
+  rage: number;
+  picks: { icon: string; name: string }[];
+}
+// ---------- 蓄力攻击参数 ----------
+const CHARGE_MAX = 720; // 充满蓄力条所需 ms
+const CHARGE_TAP_MS = 170; // 按住 < 此值视为点屏普攻（不释放蓄力）
+const CHARGE_CD = 520; // 释放蓄力后的恢复冷却 ms（限制蓄力连放频率）
+
 const RUN_BUFF_POOL: RunBuff[] = [
   { id: 'dmg', name: '+2 伤害', icon: '⚔️' },
   { id: 'cd', name: '-60 攻速冷却', icon: '⚡' },
@@ -180,6 +261,8 @@ interface BattleCallbacks {
   onUlt: (ready: boolean) => void; // 必杀就绪态变化（UI 按钮高亮）
   onWavePick: (choices: RunBuff[], onChoose: (b: RunBuff) => void) => void; // 波次 3 选 1
   onDailyEnd: (score: number) => void; // 每日挑战结束（死亡时）→ UI 发奖并返回
+  onBuffs?: (s: RunBuffSummary) => void; // 本局临时增益变化 → UI 看板刷新
+  onMaterials?: () => void; // 拾取材料 → 刷新顶部 HUD 材料数
 }
 
 /** 每波随机修饰词（混沌波次）：影响怪物血量/速度、刷怪间隔、金币 */
@@ -220,6 +303,32 @@ export class Battle {
   private kills = 0;
   private nextBossKills = 15; // 达到该击杀数时召唤魔王 Boss
   private monsters: Monster[] = [];
+  /** 当前装备武器（决定攻击方式 / 被动 / 主动技） */
+  private weapon: WeaponDef = WEAPON_BY_ID['sword'];
+  /** 当前装备加成快照（头盔/护甲/靴子 三槽汇总；进入场/换装时刷新） */
+  private gb: GearBonus = EMPTY_GEAR_BONUS;
+  /** 武器强化等级带来的伤害/冷却倍率（syncLoadout 刷新；1 级 = 1） */
+  private weaponDmgMult = 1;
+  private weaponCdMult = 1;
+  /** 远程武器投射物 */
+  private bolts: Bolt[] = [];
+  /** 陀螺（环绕武器） */
+  private tops: Top[] = [];
+  /** 闪电链段（权杖） */
+  private zaps: Zap[] = [];
+  /** 蓄力光束（剑气/突刺/裂地波） */
+  private beams: Beam[] = [];
+  /** 扩散冲击环（陨石砸/死亡收割） */
+  private shockrings: ShockRing[] = [];
+  /** 蓄力攻击状态：按住时充能，松开释放（短按则退化为普攻） */
+  private charging = false;
+  private chargeT = 0; // 当前蓄力累计 ms
+  private chargeCd = 0; // 释放蓄力后恢复冷却 ms
+  private chargeFull = false; // 已播过「蓄力满」提示（避免每帧重复）
+  /** 掉落在地上的材料（滑动拾取） */
+  private matPickups: MatPickup[] = [];
+  /** 指针是否按下（用于判定滑动拾取，区别于点屏攻击） */
+  private pointerDown = false;
   private floaters: Floater[] = [];
   private stars: Array<{ x: number; y: number; p: number }> = [];
   private spawnTimer = 500;
@@ -242,6 +351,8 @@ export class Battle {
   // 怒气 / 必杀
   private rage = 0;
   private readonly rageMax = 100;
+  private level = 1;
+  private exp = 0;
   private ultReady = false;
   // 道具增益
   private powerups: Powerup[] = [];
@@ -259,6 +370,7 @@ export class Battle {
   private rbCrit = 0;
   private rbCoin = 0;
   private rbRage = 0;
+  private pickedBuffs: { icon: string; name: string }[] = [];
 
   constructor(canvas: HTMLCanvasElement, state: GameState, cb: BattleCallbacks) {
     this.canvas = canvas;
@@ -266,11 +378,16 @@ export class Battle {
     this.state = state;
     this.cb = cb;
     this.stats = state.battleStats();
+    this.weapon = state.equippedWeaponDef();
+    this.gb = state.equippedGearBonuses();
     this.hp = this.effMaxHp();
     this.genStars();
 
     this.resize();
     canvas.addEventListener('pointerdown', this.onPointerDown);
+    canvas.addEventListener('pointermove', this.onPointerMove);
+    window.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('pointercancel', this.onPointerUp);
     if (typeof ResizeObserver !== 'undefined') {
       this.ro = new ResizeObserver(this.resize);
       this.ro.observe(canvas);
@@ -294,9 +411,11 @@ export class Battle {
     if (this.running) return;
     // 重新进入一局（非每日模式）若处于死亡态，自动开新一局，避免落地即 GAME OVER
     if (this.dead && !this.dailyMode) this.respawn();
+    this.syncWeapon(); // 进入场时同步装备的武器（工坊可能换了武器）
     this.running = true;
     this.last = performance.now();
     this.rafId = requestAnimationFrame(this.loop);
+    this.cb.onBuffs?.(this.buffSummary()); // 进入/恢复时刷新本局增益看板
   }
 
   /** 进入每日挑战：固定修饰词、重置一局、死亡即结算。由 ui.ts 在 go('battle') 后调用。 */
@@ -313,6 +432,12 @@ export class Battle {
     this.running = false;
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = 0;
+    // 中断蓄力、清掉瞬态特效，避免离场时残留
+    this.charging = false;
+    this.chargeT = 0;
+    this.chargeCd = 0;
+    this.beams = [];
+    this.shockrings = [];
     // 离开时把本局赚到的金币落盘（earn 不自动 save）
     this.state.save();
   }
@@ -327,27 +452,45 @@ export class Battle {
   /** 技能树变动后重算派生属性；maxHp 可能提升，当前血量按上限钳制 */
   syncAfterBuy(): void {
     this.stats = this.state.battleStats();
+    this.syncLoadout();
     if (this.hp > this.effMaxHp()) this.hp = this.effMaxHp();
   }
-  // ---- 生效属性（永久技能 + 波次临时增益叠加）----
+  /** 同步当前装备（武器 + 装备加成快照）；工坊换装后 / 进入场时调用 */
+  syncWeapon(): void {
+    this.syncLoadout();
+  }
+  private syncLoadout(): void {
+    this.weapon = this.state.equippedWeaponDef();
+    this.gb = this.state.equippedGearBonuses();
+    const wl = this.state.weaponLevel(this.weapon.id);
+    this.weaponDmgMult = 1 + 0.12 * (wl - 1); // 每级 +12% 伤害
+    this.weaponCdMult = 1 - 0.03 * (wl - 1); // 每级 -3% 冷却
+  }
+  // ---- 生效属性（永久技能 + 波次临时增益 + 武器被动 + 装备加成 叠加）----
   private effDamage(): number {
-    return this.stats.damage + this.rbDmg;
+    return Math.round((this.stats.damage + this.rbDmg + this.gb.dmgAdd) * (this.weapon.passive.dmgMult ?? 1) * this.weaponDmgMult);
   }
   private effCooldown(): number {
-    return Math.max(120, this.stats.cooldown + this.rbCd);
+    return Math.max(120, Math.round((this.stats.cooldown + this.rbCd + this.gb.cdAdd) * (this.weapon.passive.cdMult ?? 1) * this.weaponCdMult));
   }
   private effMaxHp(): number {
-    return this.stats.maxHp + this.rbMaxHp + this.state.metaHP();
+    return this.stats.maxHp + this.rbMaxHp + this.state.metaHP() + this.gb.hpAdd;
   }
   private effLifesteal(): number {
-    return this.stats.lifesteal + this.rbLifesteal;
+    return this.stats.lifesteal + this.rbLifesteal + (this.weapon.passive.lifestealAdd ?? 0) + this.gb.lsAdd;
   }
   private effCrit(): number {
-    return Math.min(0.9, this.stats.crit + this.rbCrit);
+    return Math.min(0.9, this.stats.crit + this.rbCrit + (this.weapon.passive.critAdd ?? 0) + this.gb.critAdd);
   }
-  /** 金币倍率：技能 + 波次增益 + FEVER + 混沌修饰词 */
+  private effKnockback(): number {
+    return this.weapon.passive.knockMult ?? 1;
+  }
+  private effRange(): number {
+    return 84 + (this.weapon.passive.rangeAdd ?? 0);
+  }
+  /** 金币倍率：技能 + 装备 + 波次增益 + FEVER + 混沌修饰词 */
   private coinMult(): number {
-    return 1 + this.stats.coinBonus + this.rbCoin + (this.fever ? 0.5 : 0) + (this.waveMod?.coin ?? 0);
+    return 1 + this.stats.coinBonus + this.gb.coinAdd + this.rbCoin + (this.fever ? 0.5 : 0) + (this.waveMod?.coin ?? 0);
   }
   /** 应用波次 3 选 1 增益 */
   applyRunBuff(b: RunBuff): void {
@@ -360,7 +503,21 @@ export class Battle {
       case 'coin': this.rbCoin += 0.25; break;
       case 'rage': this.rbRage += 15; break;
     }
+    this.pickedBuffs.push({ icon: b.icon, name: b.name });
     audio.sfx('skill');
+  }
+  /** 当前本局增益快照（供 UI 看板） */
+  private buffSummary(): RunBuffSummary {
+    return {
+      dmg: this.rbDmg,
+      cd: this.rbCd,
+      maxHp: this.rbMaxHp,
+      lifesteal: this.rbLifesteal,
+      crit: this.rbCrit,
+      coin: this.rbCoin,
+      rage: this.rbRage,
+      picks: this.pickedBuffs.slice(),
+    };
   }
 
   /** 按舞台实际宽高比重算虚拟宽（与飞镖一致），画布铺满无变形 */
@@ -378,6 +535,7 @@ export class Battle {
 
   private onPointerDown = (e: PointerEvent): void => {
     e.preventDefault();
+    this.pointerDown = true;
     if (this.dead) {
       // 每日挑战：死亡即结算返回（交 UI 发奖）；普通模式：点屏重生
       if (this.dailyMode) {
@@ -389,61 +547,318 @@ export class Battle {
       this.respawn();
       return;
     }
-    this.trySwing();
+    this.startCharge();
   };
+  private onPointerUp = (): void => {
+    this.pointerDown = false;
+    this.releaseChargeInput();
+  };
+  /** 滑动经过地上材料时批量拾取（点屏攻击不影响） */
+  private onPointerMove = (e: PointerEvent): void => {
+    if (this.dead || !this.pointerDown) return;
+    const p = this.pointerToCanvas(e);
+    if (!p) return;
+    const r = 28;
+    let picked = false;
+    for (let i = this.matPickups.length - 1; i >= 0; i--) {
+      const pk = this.matPickups[i];
+      if (!pk.landed) continue;
+      if (Math.hypot(p.x - pk.x, p.y - pk.y) < r) {
+        this.state.addMaterial(pk.mat, pk.n);
+        const def = MATERIAL_BY_ID[pk.mat];
+        this.addFloater(pk.x, pk.y - 12, `${def.icon}+${pk.n}`, '#7df9ff');
+        this.matPickups.splice(i, 1);
+        picked = true;
+      }
+    }
+    if (picked) {
+      audio.sfx('coin');
+      this.cb.onMaterials?.();
+    }
+  };
+  /** 屏幕坐标 → 画布坐标（兼容 .game-root.rotated 的 90° 旋转） */
+  private pointerToCanvas(e: PointerEvent): { x: number; y: number } | null {
+    const rect = this.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const rotated = !!document.getElementById('gameRoot')?.classList.contains('rotated');
+    if (rotated) {
+      return {
+        x: (e.clientY - rect.top) * (this.canvas.width / rect.height),
+        y: (rect.left + rect.width - e.clientX) * (this.canvas.height / rect.width),
+      };
+    }
+    return {
+      x: (e.clientX - rect.left) * (this.canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (this.canvas.height / rect.height),
+    };
+  }
 
   // ---------- 战斗 ----------
   private trySwing(): void {
     if (this.swingCd > 0 || this.dead) return;
-    // 加速增益：冷却减半
     const cd = this.effCooldown();
     this.swingCd = this.buffHaste > 0 ? Math.round(cd * 0.5) : cd;
-    this.swingTimer = 160;
+    this.swingTimer = this.weapon.attack === 'ranged' ? 120 : 160; // 远程也有出手动画（投掷）
     audio.sfx('throw');
-    // 即时判定：挥剑瞬间对前方所有怪物造成伤害
-    const reach = this.playerX + 84;
+    if (this.weapon.attack === 'ranged') this.fireBolt(false); // 远程：掷出飞镖/箭
+    else if (this.weapon.attack === 'orbit') this.spawnTops(this.weapon.passive.orbitCount ?? 1); // 陀螺：环绕
+    else if (this.weapon.attack === 'chain') this.chainZap(this.weapon.passive.chainCount ?? 3, this.effDamage()); // 权杖：闪电链
+    else this.meleeArc(); // 近战：即时判定前方
+  }
+
+  /** 按下：先尝试一次普攻（保留「点屏即挥」的即时手感），同时开始蓄力 */
+  private startCharge(): void {
+    this.trySwing();
+    this.charging = true;
+    this.chargeT = 0;
+    this.chargeFull = false;
+  }
+
+  /** 松开：短按不重复释放（普攻已在按下时出手）；蓄力满阈值则释放蓄力攻击 */
+  private releaseChargeInput(): void {
+    if (!this.charging) return;
+    this.charging = false;
+    this.chargeFull = false;
+    // 死亡 / 暂停（如波次 3 选 1 弹窗）期间不释放，避免空放
+    if (this.dead || !this.running) return;
+    if (this.chargeT < CHARGE_TAP_MS) return; // 短按 = 普攻，已在按下时挥出
+    if (this.chargeCd > 0) return; // 蓄力恢复中：不再释放（普攻已在按下时挥出）
+    this.fireCharge(Math.min(1, this.chargeT / CHARGE_MAX));
+  }
+
+  /** 蓄力攻击：按装备武器的 charge.id 分派独特高阶效果，威力随等级(0..1)提升 */
+  private fireCharge(level: number): void {
+    this.chargeCd = CHARGE_CD;
+    this.swingCd = Math.max(this.swingCd, 240); // 释放硬直，避免立即接普攻
+    const dmg = Math.max(1, Math.round(this.effDamage() * (2 + level * 4))); // 2x..6x
+    const ch = this.weapon.charge;
+    const full = level >= 0.999;
+    audio.sfx('skill');
+    this.addShake(1 + level * 1.5);
+    this.addFlash(full ? '#ffd45e' : '#7df9ff', 0.25 + level * 0.25);
+    this.addFreeze(40 + level * 50);
+    this.addFloater(VW / 2, GROUND_Y - 72, `${ch.icon} ${ch.name}!`, full ? '#ffd45e' : '#7df9ff');
+
+    switch (ch.id) {
+      case 'beam': // 剑·剑气斩：前方穿透能量弧
+        this.beams.push({ x: this.playerX + 30, y: GROUND_Y - 18, vx: 0.62, half: 16, dmg, crit: true, life: 360, hit: new Set<Monster>(), variant: 'beam', knock: 24 });
+        break;
+      case 'thrust': // 矛·贯星突：更长更快的穿透枪光
+        this.beams.push({ x: this.playerX + 30, y: GROUND_Y - 18, vx: 0.95, half: 11, dmg: Math.round(dmg * 1.2), crit: true, life: 340, hit: new Set<Monster>(), variant: 'thrust', knock: 12 });
+        break;
+      case 'wave': // 斧·裂地波：地面冲击波推进，巨力击退
+        this.beams.push({ x: this.playerX + 24, y: GROUND_Y - 10, vx: 0.42, half: 15, dmg: Math.round(dmg * 0.9), crit: true, life: 560, hit: new Set<Monster>(), variant: 'wave', knock: 42 });
+        break;
+      case 'meteor': {
+        // 锤·陨石砸：玩家周围巨大范围爆震 + 击退
+        const radius = 70 + level * 70;
+        const cx = this.playerX + 18;
+        const cy = GROUND_Y - 18;
+        this.shockrings.push({ x: cx, y: cy, r: 8, maxR: radius, life: 340, maxLife: 340, color: PAL['o'] });
+        this.shockrings.push({ x: cx, y: cy, r: 8, maxR: radius * 0.7, life: 260, maxLife: 260, color: PAL['y'] });
+        this.burst(cx, cy, 24 + Math.round(level * 24), PAL['o'], 0.32);
+        this.burst(cx, cy, 12, PAL['y'], 0.26);
+        for (const m of this.monsters) {
+          if (Math.abs(m.x - cx) <= radius) this.hitMonster(m, dmg, true, 46 * this.effKnockback());
+        }
+        this.addShake(2 + level * 2);
+        break;
+      }
+      case 'reap': {
+        // 镰·死亡收割：全屏横扫 + 吸血（hitMonster 自带 effLifesteal）
+        this.shockrings.push({ x: this.playerX + 30, y: GROUND_Y - 30, r: 16, maxR: VW, life: 380, maxLife: 380, color: PAL['P'] });
+        this.burst(this.playerX + 30, GROUND_Y - 30, 22, PAL['P'], 0.28);
+        for (const m of this.monsters) this.hitMonster(m, dmg, true, 18 * this.effKnockback());
+        this.addFlash('#c061e0', 0.3);
+        break;
+      }
+      case 'volley': {
+        // 飞镖·暴雨镖：扇形散射多枚（越蓄越多）
+        const n = 3 + Math.round(level * 5);
+        const speed = (this.weapon.passive.projectileSpeed ?? 560) / 1000;
+        for (let k = 0; k < n; k++) {
+          const ang = (k - (n - 1) / 2) * 0.16;
+          this.bolts.push({ x: this.playerX + 30, y: GROUND_Y - 20, vx: speed * Math.cos(ang), dmg, crit: true, life: 460, pierce: Math.max(2, n), hit: new Set<Monster>() });
+        }
+        break;
+      }
+      case 'arrowstorm': {
+        // 弓·穿透箭雨：多支高穿透箭覆盖全场
+        const n = 3 + Math.round(level * 4);
+        const speed = (this.weapon.passive.projectileSpeed ?? 720) / 1000;
+        const pierce = 3 + Math.round(level * 4);
+        for (let k = 0; k < n; k++) {
+          const ang = (k - (n - 1) / 2) * 0.14;
+          this.bolts.push({ x: this.playerX + 30, y: GROUND_Y - 20, vx: speed * Math.cos(ang), dmg, crit: true, life: 520, pierce, hit: new Set<Monster>() });
+        }
+        break;
+      }
+      case 'topstorm': {
+        // 陀螺·陀螺风暴：多个大半径陀螺环绕狂扫
+        const n = 3 + Math.round(level * 4);
+        for (let k = 0; k < n; k++) {
+          this.tops.push({ ang: (k / n) * Math.PI * 2, radius: 60 + (k % 3) * 18, spin: 0.014, life: 2600 + level * 800, dmg, crit: true, hit: new Set<Monster>() });
+        }
+        break;
+      }
+      case 'judgment': // 权杖·雷霆审判：更强更长的闪电链
+        this.chainZap(5 + Math.round(level * 5), dmg);
+        this.addFlash('#7df9ff', 0.3);
+        break;
+      default: {
+        // 兜底：前方范围爆震
+        const reach = this.playerX + this.effRange() + 40;
+        for (const m of this.monsters) {
+          if (m.x < this.playerX - 6 || m.x > reach) continue;
+          this.hitMonster(m, dmg, true, 30 * this.effKnockback());
+        }
+      }
+    }
+    // 清理被蓄力击杀的怪物（给怒气：byUlt=false）
+    for (let i = this.monsters.length - 1; i >= 0; i--) {
+      if (this.monsters[i].hp <= 0) this.killMonster(this.monsters[i], i, false);
+    }
+  }
+
+  /** 对单个怪物造成一次伤害（近战挥砍 / 飞镖命中共用） */
+  private hitMonster(m: Monster, dmg: number, crit: boolean, knockback: number): void {
+    m.hp -= dmg;
+    m.lastCrit = crit;
+    m.hitFlash = 90;
+    m.x += knockback;
+    if (m.type === 'chest' && !m.flee) {
+      m.flee = true;
+      m.fleeTimer = 0;
+    }
+    this.burst(m.x, GROUND_Y - foeH(m.type) / 2, crit ? 10 : 5, crit ? PAL['y'] : PAL['w']);
+    if (crit) {
+      this.addShake(1);
+      this.addFreeze(50);
+      audio.haptic(25);
+    } else {
+      audio.haptic(12);
+    }
+    this.addFloater(m.x, GROUND_Y - foeH(m.type) - 6, String(dmg), crit ? '#ffd45e' : '#ffffff');
+    const ls = this.effLifesteal();
+    if (ls > 0 && this.hp < this.effMaxHp()) {
+      this.hp = Math.min(this.effMaxHp(), this.hp + ls);
+    }
+    this.gainRage(8);
+  }
+
+  /** 近战：挥砍瞬间对前方所有怪物造成伤害 */
+  private meleeArc(): void {
+    const reach = this.playerX + this.effRange();
+    const knock = 16 * this.effKnockback();
     let hitAny = false;
     for (const m of this.monsters) {
       if (m.x < this.playerX - 6 || m.x > reach) continue;
       let dmg = this.effDamage();
       const crit = Math.random() < this.effCrit();
       if (crit) dmg = Math.round(dmg * this.stats.critMult);
-      if (this.buffDouble > 0) dmg *= 2; // 双倍伤害增益
-      m.hp -= dmg;
-      m.lastCrit = crit;
-      m.hitFlash = 90;
-      m.x += 16; // 击退
-      // 宝箱怪一旦被命中立即开始逃跑
-      if (m.type === 'chest' && !m.flee) {
-        m.flee = true;
-        m.fleeTimer = 0;
-      }
-      // 打击感
-      this.burst(m.x, GROUND_Y - foeH(m.type) / 2, crit ? 10 : 5, crit ? PAL['y'] : PAL['w']);
-      if (crit) {
-        this.addShake(5);
-        this.addFreeze(50);
-        audio.haptic(25);
-      } else {
-        this.addShake(2);
-        audio.haptic(12);
-      }
-      this.addFloater(m.x, GROUND_Y - foeH(m.type) - 6, String(dmg), crit ? '#ffd45e' : '#ffffff');
-      const ls = this.effLifesteal();
-      if (ls > 0 && this.hp < this.effMaxHp()) {
-        this.hp = Math.min(this.effMaxHp(), this.hp + ls);
-      }
-      this.gainRage(8);
+      if (this.buffDouble > 0) dmg *= 2;
+      this.hitMonster(m, dmg, crit, knock);
       hitAny = true;
     }
     if (hitAny) audio.sfx('hit');
-    // 清理死亡怪物 + 结算（倒序删除）
     for (let i = this.monsters.length - 1; i >= 0; i--) {
       if (this.monsters[i].hp <= 0) this.killMonster(this.monsters[i], i);
     }
   }
 
-  private killMonster(m: Monster, i: number): void {
+  /** 远程：掷出飞镖/箭投射物；split=true 时扇形掷 3 枚 */
+  private fireBolt(split: boolean): void {
+    const speed = (this.weapon.passive.projectileSpeed ?? 560) / 1000; // px/ms
+    const pierce = Math.max(1, this.weapon.passive.pierce ?? 1);
+    const baseDmg = this.effDamage();
+    const make = (yOff: number, angOff = 0) => {
+      const crit = Math.random() < this.effCrit();
+      let dmg = baseDmg;
+      if (crit) dmg = Math.round(dmg * this.stats.critMult);
+      if (this.buffDouble > 0) dmg *= 2;
+      const ang = angOff;
+      this.bolts.push({
+        x: this.playerX + 30,
+        y: GROUND_Y - 20 + yOff,
+        vx: speed * Math.cos(ang),
+        dmg,
+        crit,
+        life: 460,
+        pierce,
+        hit: new Set<Monster>(),
+      });
+    };
+    if (split) {
+      make(-9, -0.18);
+      make(0, 0);
+      make(9, 0.18);
+    } else {
+      make(0);
+    }
+  }
+
+  /** 陀螺：放出绕身旋转的飞行物，撞击怪物（每个陀螺每怪命中一次） */
+  private spawnTops(count: number): void {
+    const baseDmg = this.effDamage();
+    for (let k = 0; k < count; k++) {
+      const crit = Math.random() < this.effCrit();
+      let dmg = baseDmg;
+      if (crit) dmg = Math.round(dmg * this.stats.critMult);
+      if (this.buffDouble > 0) dmg *= 2;
+      this.tops.push({
+        ang: (k / count) * Math.PI * 2,
+        radius: 56 + (k % 2) * 14,
+        spin: 0.012,
+        life: 2600,
+        dmg,
+        crit,
+        hit: new Set<Monster>(),
+      });
+    }
+  }
+
+  /** 闪电链：从玩家出发，在最近且未传导的怪物间跳跃，各造成一次伤害 */
+  private chainZap(maxTargets: number, dmg: number): void {
+    let fx = this.playerX + 12;
+    let fy = GROUND_Y - 30;
+    const chained: Monster[] = [];
+    for (let k = 0; k < maxTargets; k++) {
+      let best: Monster | null = null;
+      let bd = Infinity;
+      for (const m of this.monsters) {
+        if (chained.includes(m)) continue;
+        const mx = m.x;
+        const my = GROUND_Y - foeH(m.type) / 2;
+        const d = Math.hypot(mx - fx, my - fy);
+        if (d < bd && d < 260) {
+          bd = d;
+          best = m;
+        }
+      }
+      if (!best) break;
+      const mx = best.x;
+      const my = GROUND_Y - foeH(best.type) / 2;
+      this.zaps.push({ x1: fx, y1: fy, x2: mx, y2: my, life: 180 });
+      const crit = Math.random() < this.effCrit();
+      let d = dmg;
+      if (crit) d = Math.round(d * this.stats.critMult);
+      if (this.buffDouble > 0) d *= 2;
+      this.hitMonster(best, d, crit, 5);
+      chained.push(best);
+      fx = mx;
+      fy = my;
+    }
+    if (chained.length > 0) {
+      audio.sfx('jackpot');
+      this.addShake(1);
+      // 清理被电死的怪物
+      for (let i = this.monsters.length - 1; i >= 0; i--) {
+        if (this.monsters[i].hp <= 0) this.killMonster(this.monsters[i], i);
+      }
+    }
+  }
+
+  private killMonster(m: Monster, i: number, byUlt = false): void {
     this.monsters.splice(i, 1);
     this.kills++;
     // 成就计数
@@ -476,12 +891,16 @@ export class Battle {
     audio.sfx(isChest ? 'jackpot' : m.type === 'boss' ? 'jackpot' : this.wave >= 4 ? 'coinBig' : 'coin');
     // 打击感 + 怒气 + 道具掉落
     this.burst(m.x, GROUND_Y - foeH(m.type) / 2, isChest || m.type === 'boss' ? 26 : 8, critKill ? PAL['y'] : PAL[m.type === 'imp' || m.type === 'bomber' ? 'r' : 'g']);
-    this.addShake(isChest || m.type === 'boss' ? 8 : critKill ? 4 : 2);
     if (isChest || m.type === 'boss') {
       this.addFlash('#ffd45e', 0.5);
       this.addFreeze(80);
     }
-    this.gainRage((m.type === 'boss' ? 35 : 12) + this.rbRage);
+    if (!byUlt) this.gainRage((m.type === 'boss' ? 35 : 12) + this.rbRage); // 必杀击杀不加怒气，避免无限连大
+    // 经验：boss/宝箱多，普通怪少；必杀击杀也给经验（只限怒气不加）
+    const expGain =
+      m.type === 'boss' ? 20 : m.type === 'chest' ? 15 : m.type === 'golem' ? 8 : m.type === 'imp' || m.type === 'bomber' ? 4 : 3;
+    this.gainExp(expGain);
+    this.dropMaterial(m); // 材料掉落（合成武器用）
     this.maybeDropPower(m.x);
     // 稀有心掉落：回 1 血
     if (!this.dead && Math.random() < 0.08 && this.hp < this.effMaxHp()) {
@@ -526,7 +945,7 @@ export class Battle {
     if (this.shieldCharges > 0) {
       this.shieldCharges--;
       this.playerInvuln = 480;
-      this.addShake(3);
+      this.addShake(1);
       this.burst(this.playerX, GROUND_Y - P_H / 2, 12, PAL['e']);
       this.addFloater(this.playerX, GROUND_Y - P_H - 14, '🛡格挡!', PAL['e']);
       audio.sfx('skill');
@@ -535,7 +954,7 @@ export class Battle {
     this.hp -= n;
     this.playerFlash = 300;
     this.playerInvuln = 720;
-    this.addShake(5);
+    this.addShake(2);
     this.addFlash('#e84753', 0.4);
     this.burst(this.playerX, GROUND_Y - P_H / 2, 10, PAL['A']);
     audio.haptic(45);
@@ -564,6 +983,7 @@ export class Battle {
     this.waveMod = null;
     this.spawnTimer = 500;
     this.nearSpawnsLeft = 3;
+    this.time = 0; // 每局重新计时：难度随时间从 0 开始递增
     this.playerInvuln = 500;
     this.rage = 0;
     this.ultReady = false;
@@ -577,6 +997,19 @@ export class Battle {
     this.fever = false;
     // 本局临时增益随死亡清空（永久技能树不受影响）
     this.rbDmg = this.rbCd = this.rbMaxHp = this.rbLifesteal = this.rbCrit = this.rbCoin = this.rbRage = 0;
+    this.level = 1;
+    this.exp = 0;
+    this.pickedBuffs = [];
+    this.bolts = [];
+    this.tops = [];
+    this.zaps = [];
+    this.beams = [];
+    this.shockrings = [];
+    this.charging = false;
+    this.chargeT = 0;
+    this.chargeCd = 0;
+    this.chargeFull = false;
+    this.matPickups = [];
     this.shake = 0;
     this.flash = 0;
   }
@@ -606,7 +1039,7 @@ export class Battle {
   // ---------- 打击感（juice）----------
   private addShake(n: number): void {
     if (settings.get().reduceMotion) return;
-    this.shake = Math.min(14, this.shake + n);
+    this.shake = Math.min(5, this.shake + n);
   }
   private addFreeze(ms: number): void {
     if (settings.get().reduceMotion) return;
@@ -645,6 +1078,25 @@ export class Battle {
     }
   }
 
+  // ---------- 经验 / 等级（升级得属性点，自动投入伤害+血量）----------
+  private expForNext(): number {
+    return 8 + this.level * 4;
+  }
+  private gainExp(n: number): void {
+    this.exp += n;
+    while (this.exp >= this.expForNext()) {
+      this.exp -= this.expForNext();
+      this.level++;
+      // 属性点：每级 +1 伤害 +2 血量（并补 2 血）
+      this.rbDmg += 1;
+      this.rbMaxHp += 2;
+      this.hp = Math.min(this.effMaxHp(), this.hp + 2);
+      this.addFloater(this.playerX, GROUND_Y - P_H - 44, `⬆ Lv.${this.level} +属性`, '#7df9ff');
+      this.addFlash('#7df9ff', 0.25);
+      audio.sfx('combo');
+    }
+  }
+
   // ---------- 怒气 / 必杀 ----------
   private gainRage(n: number): void {
     if (this.ultReady) return; // 满了不再累加
@@ -656,32 +1108,59 @@ export class Battle {
       audio.sfx('combo');
     }
   }
-  /** 必杀：旋风斩 —— 对全场怪物造成大范围伤害 + 击退 + 爆发 */
+  /** 必杀：按装备武器分派主动技 —— 旋风斩/横扫/收割 / 裂地/地裂 / 分裂镖/三连箭 / 暴走(陀螺) / 雷暴(权杖) */
   ultimate(): void {
     if (!this.ultReady || this.dead) return;
     this.ultReady = false;
     this.rage = 0;
     this.cb.onUlt(false);
+    const sk = this.weapon.skill.id;
+    // 远程分裂（飞镖/弓）：扇形 3 发
+    if (sk === 'split') {
+      audio.sfx('jackpot');
+      this.addFlash('#7df9ff', 0.4);
+      this.fireBolt(true);
+      this.addFloater(VW / 2, GROUND_Y - 70, '🎯 分裂!', '#7df9ff');
+      return;
+    }
+    // 陀螺：暴走——同时放出 3 个陀螺
+    if (sk === 'frenzy') {
+      audio.sfx('jackpot');
+      this.addFlash('#7df9ff', 0.4);
+      this.spawnTops(3);
+      this.addFloater(VW / 2, GROUND_Y - 70, '🌀 暴走!', '#7df9ff');
+      return;
+    }
+    // 权杖：雷暴——更强更长的闪电链
+    if (sk === 'storm') {
+      audio.sfx('jackpot');
+      this.addFlash('#7df9ff', 0.5);
+      this.chainZap(6, Math.round(this.effDamage() * 2.4));
+      this.addFloater(VW / 2, GROUND_Y - 70, '⚡ 雷暴!', '#7df9ff');
+      return;
+    }
+    // 剑 / 斧：AoE 环形冲击（裂地斩更强）
+    const isSlam = sk === 'slam';
     audio.sfx('jackpot');
-    this.addShake(12);
+    this.addShake(isSlam ? 5 : 4);
     this.addFlash('#ffffff', 0.7);
     this.addFreeze(90);
     const cx = this.playerX + 40;
     const cy = GROUND_Y - 30;
-    this.burst(cx, cy, 40, PAL['y'], 0.32);
+    this.burst(cx, cy, isSlam ? 52 : 40, PAL['y'], 0.32);
     this.burst(cx, cy, 24, PAL['e'], 0.26);
-    // 环形冲击：对所有怪物造成伤害（威力随波次）
-    const dmg = 8 + this.wave * 2 + this.effDamage() * 2;
+    const dmg = Math.round((8 + this.wave * 2 + this.effDamage() * 2) * (isSlam ? 1.6 : 1));
+    const knock = isSlam ? 70 : 40;
     for (let i = this.monsters.length - 1; i >= 0; i--) {
       const m = this.monsters[i];
       m.hp -= dmg;
       m.hitFlash = 120;
       m.lastCrit = true;
-      m.x += 40; // 强击退
+      m.x += knock; // 强击退
       this.burst(m.x, GROUND_Y - foeH(m.type) / 2, 8, PAL['o']);
-      if (m.hp <= 0) this.killMonster(m, i);
+      if (m.hp <= 0) this.killMonster(m, i, true); // 必杀击杀不加怒气，防无限连大
     }
-    this.addFloater(VW / 2, GROUND_Y - 70, '💢 旋风斩!', '#ffd45e');
+    this.addFloater(VW / 2, GROUND_Y - 70, isSlam ? '🪓 裂地斩!' : '💢 旋风斩!', '#ffd45e');
   }
 
   // ---------- 道具 ----------
@@ -691,6 +1170,32 @@ export class Battle {
       const t = pool[Math.floor(Math.random() * pool.length)];
       this.powerups.push({ x, y: GROUND_Y - 16, type: t, life: 6000 });
     }
+  }
+  /** 击杀掉落材料：按怪物类型从材料池抽取，概率/数量随波次提升；掉到地上需手动滑动拾取 */
+  private dropMaterial(m: Monster): void {
+    if (Math.random() > 0.45 + this.wave * 0.02) return; // 基础 45% + 波次加成
+    const pool: MaterialId[] =
+      m.type === 'boss' || m.type === 'chest'
+        ? ['gold', 'crystal', 'ember', 'gold']
+        : m.type === 'golem'
+          ? ['iron', 'crystal', 'gold', 'iron']
+          : m.type === 'bomber'
+            ? ['ember', 'bone', 'ember']
+            : m.type === 'imp'
+              ? ['iron', 'bone', 'ember']
+              : ['wood', 'leather', 'bone']; // 史莱姆等弱怪
+    const mat = pool[Math.floor(Math.random() * pool.length)];
+    const n = 1 + (Math.random() < 0.15 + this.wave * 0.01 ? 1 : 0);
+    this.matPickups.push({
+      x: m.x + (Math.random() * 2 - 1) * 8,
+      y: GROUND_Y - foeH(m.type) / 2,
+      vy: -130 - Math.random() * 60, // 向上弹一下再落地
+      mat,
+      n,
+      landed: false,
+      life: 14000,
+      bob: Math.random() * Math.PI * 2,
+    });
   }
   private updatePowerups(dt: number): void {
     for (let i = this.powerups.length - 1; i >= 0; i--) {
@@ -758,18 +1263,34 @@ export class Battle {
     if (this.playerInvuln > 0) this.playerInvuln -= dt;
     if (this.buffHaste > 0) this.buffHaste -= dt;
     if (this.buffDouble > 0) this.buffDouble -= dt;
+    // 蓄力累计 + 蓄满一次性提示
+    if (this.charging) {
+      this.chargeT = Math.min(CHARGE_MAX, this.chargeT + dt);
+      if (this.chargeT >= CHARGE_MAX && !this.chargeFull) {
+        this.chargeFull = true;
+        audio.sfx('combo');
+        this.addFloater(this.playerX, GROUND_Y - P_H - 26, '蓄力满!', '#ffd45e');
+      }
+    }
+    if (this.chargeCd > 0) this.chargeCd -= dt;
 
-    // 生成怪物（节奏随机化：基础间隔 × 0.55..1.45 的抖动，偶尔双连刷）
+    // 生成怪物（节奏随机化：基础间隔 × 0.55..1.45 的抖动，偶尔双连刷；时间越久刷得越快）
     this.spawnTimer -= dt;
+    // 空场时压缩下一次刷怪间隔，避免清场后长时间空等
+    if (this.monsters.length === 0) this.spawnTimer = Math.min(this.spawnTimer, 280);
     if (this.spawnTimer <= 0 && this.monsters.length < 10) {
       this.spawnMonster();
-      const base = Math.max(460, 1500 - this.wave * 90);
+      const minutes = this.time / 60000;
+      const base = Math.max(260, 1400 - this.wave * 100 - minutes * 180);
       const spawnMult = this.waveMod ? this.waveMod.spawn : 1;
       this.spawnTimer = base * (0.55 + Math.random() * 0.9) * spawnMult;
-      // 高波次偶尔一次刷两只，制造节奏起伏
-      if (this.wave >= 3 && Math.random() < 0.18 && this.monsters.length < 9) this.spawnMonster();
+      // 后期偶尔一次刷两只，制造节奏起伏（时间越久概率越高）
+      const dualChance = Math.min(0.5, 0.12 + minutes * 0.06);
+      if (this.wave >= 3 && Math.random() < dualChance && this.monsters.length < 9) this.spawnMonster();
     }
 
+    // 屏幕怪物稀疏时给推进加速，缩短"清场后空等怪物走过来"的真空期
+    const sparseBoost = this.monsters.length <= 1 ? 2.5 : this.monsters.length <= 3 ? 1.8 : 1;
     // 怪物推进 + 接触判定
     for (let i = this.monsters.length - 1; i >= 0; i--) {
       const m = this.monsters[i];
@@ -779,7 +1300,7 @@ export class Battle {
         if (m.fleeTimer <= 0) m.flee = true;
       }
       const dir = m.flee ? 1 : -1;
-      m.x += (dir * m.speed * dt) / 1000;
+      m.x += (dir * m.speed * sparseBoost * dt) / 1000;
       if (m.hitFlash > 0) m.hitFlash -= dt;
       // 精英再生
       if (m.elite === 'regen' && m.hp < m.maxHp) {
@@ -794,13 +1315,14 @@ export class Battle {
         this.monsters.splice(i, 1);
         continue;
       }
-      // 接触玩家：扣血并自爆（自爆怪/狂暴精英 2 伤；宝箱怪不伤人，碰到就逃）
+      // 接触玩家：扣血并自爆（自爆怪/狂暴精英基础 2 伤；时间越久全体伤害越高。宝箱怪不伤人）
       if (m.type !== 'chest' && m.x - foeW(m.type) / 2 <= this.playerX + 14) {
-        const dmg = m.type === 'bomber' || m.elite === 'brute' ? 2 : 1;
+        const minutes = this.time / 60000;
+        const dmg = (m.type === 'bomber' || m.elite === 'brute' ? 2 : 1) + Math.min(8, Math.floor(minutes * 1.5)); // 时间越久撞伤越高
         this.damagePlayer(dmg);
         if (m.type === 'bomber') {
           this.burst(m.x, GROUND_Y - foeH(m.type) / 2, 18, PAL['O']);
-          this.addShake(7);
+          this.addShake(2);
           this.addFloater(this.playerX, GROUND_Y - P_H + 8, '💥自爆!', '#e84753');
         } else {
           this.addFloater(this.playerX, GROUND_Y - P_H + 8, m.elite === 'brute' ? '💥狂暴!' : '💥', '#e84753');
@@ -809,6 +1331,101 @@ export class Battle {
       } else if (m.type === 'chest' && !m.flee && m.x - foeW(m.type) / 2 <= this.playerX + 14) {
         m.flee = true; // 宝箱怪碰到玩家也立即逃
       }
+    }
+
+    // 投射物：推进 + 命中（穿透武器可连击多个，每怪一次）
+    for (let i = this.bolts.length - 1; i >= 0; i--) {
+      const b = this.bolts[i];
+      b.x += b.vx * dt;
+      b.life -= dt;
+      if (b.life <= 0 || b.x > VW + 20) {
+        this.bolts.splice(i, 1);
+        continue;
+      }
+      let hit: Monster | null = null;
+      for (const m of this.monsters) {
+        if (b.hit.has(m)) continue;
+        if (Math.abs(b.x - m.x) <= foeW(m.type) / 2 + 3) {
+          hit = m;
+          break;
+        }
+      }
+      if (hit) {
+        this.hitMonster(hit, b.dmg, b.crit, 6 * this.effKnockback());
+        audio.sfx('hit');
+        b.hit.add(hit);
+        if (b.hit.size >= b.pierce) this.bolts.splice(i, 1); // 达到穿透上限才消失
+      }
+    }
+    // 陀螺：旋转 + 撞击（每陀螺每怪一次）
+    for (let i = this.tops.length - 1; i >= 0; i--) {
+      const t = this.tops[i];
+      t.ang += t.spin * dt;
+      t.life -= dt;
+      const tx = this.playerX + Math.cos(t.ang) * t.radius;
+      const ty = GROUND_Y - 36 + Math.sin(t.ang) * t.radius * 0.35;
+      for (const m of this.monsters) {
+        if (t.hit.has(m)) continue;
+        if (Math.hypot(tx - m.x, ty - (GROUND_Y - foeH(m.type) / 2)) < foeW(m.type) / 2 + 10) {
+          this.hitMonster(m, t.dmg, t.crit, 8 * this.effKnockback());
+          t.hit.add(m);
+        }
+      }
+      if (t.life <= 0) this.tops.splice(i, 1);
+    }
+    // 闪电链段寿命衰减
+    for (let i = this.zaps.length - 1; i >= 0; i--) {
+      this.zaps[i].life -= dt;
+      if (this.zaps[i].life <= 0) this.zaps.splice(i, 1);
+    }
+    // 蓄力光束：推进 + 穿透命中（每怪一次）
+    for (let i = this.beams.length - 1; i >= 0; i--) {
+      const b = this.beams[i];
+      b.x += b.vx * dt;
+      b.life -= dt;
+      if (b.life <= 0 || b.x > VW + 40) {
+        this.beams.splice(i, 1);
+        continue;
+      }
+      for (const m of this.monsters) {
+        if (b.hit.has(m)) continue;
+        if (Math.abs(b.x - m.x) <= b.half + foeW(m.type) / 2) {
+          this.hitMonster(m, b.dmg, b.crit, b.knock * this.effKnockback());
+          b.hit.add(m);
+        }
+      }
+    }
+    // 冲击环：半径随寿命增长
+    for (let i = this.shockrings.length - 1; i >= 0; i--) {
+      const s = this.shockrings[i];
+      s.life -= dt;
+      if (s.life <= 0) {
+        this.shockrings.splice(i, 1);
+        continue;
+      }
+      s.r = s.maxR * (1 - s.life / s.maxLife);
+    }
+    // 清理被打死的怪物（投射物/陀螺/闪电/蓄力）
+    for (let i = this.monsters.length - 1; i >= 0; i--) {
+      if (this.monsters[i].hp <= 0) this.killMonster(this.monsters[i], i);
+    }
+
+    // 材料掉落物：下落 → 触地 → 漂浮；寿命到期消失
+    for (let i = this.matPickups.length - 1; i >= 0; i--) {
+      const pk = this.matPickups[i];
+      if (!pk.landed) {
+        pk.vy += (1400 * dt) / 1000;
+        pk.y += (pk.vy * dt) / 1000;
+        if (pk.y >= GROUND_Y - 6) {
+          pk.y = GROUND_Y - 6;
+          pk.landed = true;
+          pk.vy = 0;
+        }
+      } else {
+        pk.bob += dt * 0.006;
+      }
+      pk.life -= dt;
+      if (pk.life <= 0) this.matPickups.splice(i, 1);
     }
 
     // 浮字（vy 单位：px/ms，按 dt 累加；渲染时取整）
@@ -820,52 +1437,70 @@ export class Battle {
     }
   }
 
-  /** 定时刷的普通怪：类型随击杀数升级（史莱姆 → 恶魔 → 岩石巨人） */
-  /** 定时刷的普通怪：类型随击杀数升级（史莱姆 → 恶魔 → 岩石巨人 / 自爆怪） */
+  /** 定时刷的普通怪：种类与强度随【时间】递增——越久越强、种类越多（叠加波次/混沌/精英） */
   private spawnMonster(): void {
-    const k = this.kills;
-    const r = Math.random();
-    let type: FoeType;
-    // 稀有逃跑宝箱怪（wave>=2，~6% 概率替换普通怪）
-    if (this.wave >= 2 && Math.random() < 0.06) {
-      type = 'chest';
-    } else if (k < 5) {
-      type = 'slime';
-    } else if (k < 15) {
-      type = r < 0.6 ? 'slime' : 'imp';
-    } else if (r < 0.35) {
-      type = 'imp';
-    } else if (r < 0.6) {
-      type = 'slime';
-    } else if (r < 0.8) {
-      type = 'golem';
-    } else {
-      type = 'bomber';
-    }
+    const sec = this.time / 1000;
+    const minutes = sec / 60;
     const w = this.wave;
-    // 精英词缀（金色光环怪，wave>=2 起随机出现；宝箱/Boss 不精英）
+
+    // ---- 种类：随时间解锁 + 权重向强怪倾斜（史莱姆渐少，恶魔/巨人/自爆渐多）----
+    let type: FoeType;
+    if (sec > 20 && this.wave >= 2 && Math.random() < 0.06) {
+      type = 'chest'; // 稀有逃跑宝箱怪
+    } else {
+      const weights: [FoeType, number][] = [['slime', Math.max(0.1, 0.7 - sec * 0.008)]];
+      if (sec > 8) weights.push(['imp', 0.4]);
+      if (sec > 28) weights.push(['golem', Math.min(0.4, (sec - 28) * 0.008)]);
+      if (sec > 50) weights.push(['bomber', Math.min(0.35, (sec - 50) * 0.007)]);
+      const total = weights.reduce((s, [, wt]) => s + wt, 0);
+      let roll = Math.random() * total;
+      type = 'slime';
+      for (const [t, wt] of weights) {
+        roll -= wt;
+        if (roll <= 0) {
+          type = t;
+          break;
+        }
+      }
+    }
+
+    // ---- 时间难度倍率（持续递增，封顶防失控）----
+    const hpTimeMult = Math.min(15, 1 + minutes * 2.0); // 每分钟 +200% 血，封顶 15×
+    const speedTimeMult = Math.min(2.0, 1 + minutes * 0.13); // 每分钟 +13% 速，封顶 2×
+
+    // ---- 精英词缀（金色光环怪；时间越久出现概率越高。宝箱/Boss 不精英）----
+    const eliteChance = type === 'chest' ? 0 : Math.min(0.45, 0.14 + minutes * 0.06);
     let elite: Affix | undefined;
-    if (type !== 'chest' && this.wave >= 2 && Math.random() < 0.12) {
+    if (sec > 15 && Math.random() < eliteChance) {
       elite = (['brute', 'regen', 'swift'] as Affix[])[Math.floor(Math.random() * 3)];
     }
+
+    // ---- 基础血量（种类 + 波次）再叠时间倍率 ----
     let hp =
       type === 'chest'
         ? 5 + Math.floor(w * 0.5)
         : type === 'golem'
-          ? 8 + Math.floor(w * 1.4)
+          ? 10 + Math.floor(w * 2.2)
           : type === 'bomber'
-            ? 2 + Math.floor(w * 0.4)
+            ? 3 + Math.floor(w * 0.7)
             : type === 'imp'
-              ? 4 + Math.floor(w * 0.9)
-              : 2 + Math.floor(w * 0.7);
+              ? 5 + Math.floor(w * 1.4)
+              : 3 + Math.floor(w * 1.0);
     if (elite) hp = Math.round(hp * 1.4); // 精英血量更高
     if (type !== 'chest' && this.waveMod) hp = Math.max(1, Math.round(hp * this.waveMod.hp)); // 混沌修饰
-    const base = type === 'chest' ? 70 : type === 'golem' ? 30 : type === 'bomber' ? 80 : type === 'imp' ? 62 : 46;
-    let speed = Math.min(base + w * 2, 105);
+    hp = Math.max(1, Math.round(hp * hpTimeMult)); // 时间强化
+
+    // ---- 速度（种类 + 波次 + 时间）----
+    const base = type === 'chest' ? 70 : type === 'golem' ? 42 : type === 'bomber' ? 100 : type === 'imp' ? 80 : 64;
+    let speed = (base + w * 3.5) * speedTimeMult;
     if (this.waveMod) speed *= this.waveMod.speed; // 混沌修饰
-    if (elite === 'swift') speed = Math.min(speed * 1.6, 150); // 迅捷精英加速
-    // 宝箱怪始终从屏外入场（给玩家反应/追赶时间）；其余前几只就近
-    const x = type === 'chest' || this.nearSpawnsLeft <= 0 ? VW + 30 : Math.round(VW * (0.5 + Math.random() * 0.16));
+    speed = Math.min(speed, 190);
+    if (elite === 'swift') speed = Math.min(speed * 1.6, 245); // 迅捷精英加速
+    // 登场位置：宝箱怪从屏外；其余按密度就近入场，缩短清场后的空走距离
+    let x: number;
+    if (type === 'chest') x = VW + 30;
+    else if (this.monsters.length <= 1) x = Math.round(VW * (0.42 + Math.random() * 0.16)); // 空场：偏近，快速接战
+    else x = Math.round(VW * (0.55 + Math.random() * 0.2)); // 中近距离
     if (type !== 'chest' && this.nearSpawnsLeft > 0) this.nearSpawnsLeft--;
     this.monsters.push({ x, hp, maxHp: hp, speed, type, hitFlash: 0, elite, fleeTimer: type === 'chest' ? 2200 : undefined });
   }
@@ -885,12 +1520,99 @@ export class Battle {
     const sorted = [...this.monsters].sort((a, b) => b.x - a.x);
     for (const m of sorted) this.drawMonster(ctx, m);
 
+    // 投射物（飞镖/箭）
+    for (const b of this.bolts) {
+      const bx = Math.round(b.x);
+      const by = Math.round(b.y);
+      pixelRect(ctx, bx - 4, by - 1, 7, 2, b.crit ? PAL['y'] : PAL['w']); // 镖杆
+      pixelRect(ctx, bx + 3, by - 1, 2, 2, PAL['e']); // 镖尖
+      pixelRect(ctx, bx - 6, by - 2, 2, 1, b.crit ? PAL['Y'] : PAL['c']); // 尾翼
+      pixelRect(ctx, bx - 6, by + 1, 2, 1, b.crit ? PAL['Y'] : PAL['c']);
+    }
+    // 陀螺（旋转方块 + 光晕）
+    for (const t of this.tops) {
+      const tx = Math.round(this.playerX + Math.cos(t.ang) * t.radius);
+      const ty = Math.round(GROUND_Y - 36 + Math.sin(t.ang) * t.radius * 0.35);
+      const spin = Math.floor(this.time / 60) % 2 === 0;
+      ctx.globalAlpha = 0.4;
+      pixelRect(ctx, tx - 6, ty - 6, 12, 12, PAL['e']);
+      ctx.globalAlpha = 1;
+      if (spin) {
+        pixelRect(ctx, tx - 5, ty - 2, 10, 4, t.crit ? PAL['y'] : PAL['C']);
+        pixelRect(ctx, tx - 2, ty - 5, 4, 10, t.crit ? PAL['y'] : PAL['C']);
+      } else {
+        pixelRect(ctx, tx - 4, ty - 4, 8, 8, t.crit ? PAL['y'] : PAL['C']);
+      }
+    }
+    // 闪电链段
+    for (const z of this.zaps) {
+      ctx.globalAlpha = Math.max(0, z.life / 180);
+      pixelLine(ctx, z.x1, z.y1, z.x2, z.y2, PAL['e']);
+      pixelLine(ctx, z.x1, z.y1 + 1, z.x2, z.y2 + 1, PAL['w']);
+      ctx.globalAlpha = 1;
+    }
+    // 蓄力光束（剑气 / 突刺 / 裂地波）
+    for (const b of this.beams) {
+      const bx = Math.round(b.x);
+      const a = Math.max(0, Math.min(1, b.life / 320));
+      ctx.save();
+      ctx.globalAlpha = a;
+      if (b.variant === 'beam') {
+        // 剑气：竖向能量弧（青白核心 + 外发光 + 弧尖）
+        ctx.globalAlpha = a * 0.45;
+        pixelRect(ctx, bx - 4, b.y - 18, 8, 36, PAL['e']);
+        ctx.globalAlpha = a;
+        pixelRect(ctx, bx - 2, b.y - 16, 4, 32, PAL['w']);
+        pixelRect(ctx, bx - 1, b.y - 12, 2, 24, PAL['e']);
+        pixelRect(ctx, bx - 3, b.y - 18, 2, 5, PAL['E']);
+        pixelRect(ctx, bx + 1, b.y - 18, 2, 5, PAL['E']);
+      } else if (b.variant === 'thrust') {
+        // 突刺：横向长枪光（黄白）+ 尖端
+        pixelLine(ctx, bx - 28, b.y, bx + 8, b.y, PAL['y']);
+        pixelLine(ctx, bx - 28, b.y - 1, bx + 8, b.y - 1, PAL['w']);
+        pixelLine(ctx, bx - 28, b.y + 1, bx + 8, b.y + 1, PAL['Y']);
+        pixelRect(ctx, bx + 6, b.y - 2, 4, 5, PAL['w']);
+        pixelRect(ctx, bx + 9, b.y - 1, 2, 3, PAL['y']);
+      } else {
+        // 裂地波：地面涟漪（橙）+ 翻起的土块
+        for (let k = 0; k < 3; k++) pixelEllipse(ctx, bx - k * 9, GROUND_Y, Math.max(2, 10 - k * 2), Math.max(2, 6 - k), PAL['o']);
+        pixelRect(ctx, bx - 6, GROUND_Y - 7, 12, 7, PAL['O']);
+        pixelRect(ctx, bx - 3, GROUND_Y - 11, 6, 4, PAL['o']);
+      }
+      ctx.restore();
+    }
+    // 冲击环（陨石砸 / 死亡收割）：扩散圆环
+    for (const s of this.shockrings) {
+      const a = Math.max(0, s.life / s.maxLife);
+      ctx.save();
+      ctx.globalAlpha = a * 0.75;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, Math.max(1, s.r), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // 道具
     this.drawPowerups(ctx);
+
+    // 材料掉落物（地上，滑动拾取）
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '15px serif';
+    for (const pk of this.matPickups) {
+      const yy = pk.landed ? pk.y + Math.round(Math.sin(pk.bob) * 2) : pk.y;
+      // 即将消失时闪烁
+      if (pk.life < 3000 && Math.floor(this.time / 120) % 2 === 0) ctx.globalAlpha = 0.4;
+      ctx.fillText(MATERIAL_BY_ID[pk.mat].icon, Math.round(pk.x), Math.round(yy));
+      ctx.globalAlpha = 1;
+    }
 
     // 玩家
     this.drawPlayer(ctx);
     if (this.swingTimer > 0) this.drawSword(ctx);
+    if (this.charging) this.drawChargeBar(ctx);
 
     // 粒子
     for (const p of this.particles) {
@@ -1066,17 +1788,62 @@ export class Battle {
       ctx.strokeRect(sx - 4, sy - 4, P_W + 8, P_H + 8);
       ctx.restore();
     }
+    // 蓄力光环：按等级增强，蓄满转金色脉动
+    if (this.charging) {
+      const lv = Math.min(1, this.chargeT / CHARGE_MAX);
+      const full = lv >= 0.999;
+      ctx.save();
+      ctx.globalAlpha = 0.18 + 0.32 * lv;
+      ctx.strokeStyle = full ? PAL['y'] : PAL['e'];
+      ctx.lineWidth = 2;
+      const pad = 4 + Math.round(lv * 4) + Math.round(Math.sin(this.time / 90));
+      ctx.strokeRect(sx - pad, sy - pad, P_W + pad * 2, P_H + pad * 2);
+      ctx.restore();
+    }
   }
 
-  /** 挥剑动画：剑刃从右上扫到水平前方 */
+  /** 出手动画：按装备武器画不同图形（剑挥砍 / 斧挥砍 / 飞镖投掷） */
   private drawSword(ctx: CanvasRenderingContext2D): void {
-    const p = 1 - this.swingTimer / 160; // 0→1
+    const dur = this.weapon.attack === 'ranged' ? 120 : 160;
+    const p = 1 - this.swingTimer / dur; // 0→1
     const handX = this.playerX + 10;
     const handY = GROUND_Y - 30;
+    // 飞镖：投掷出手（手臂前伸），不画冷兵器
+    if (this.weapon.attack === 'ranged') {
+      const thrust = Math.sin(p * Math.PI); // 0→1→0
+      const armX = handX + Math.round(thrust * 16);
+      pixelLine(ctx, handX, handY, armX, handY, PAL['s']); // 手臂（肤色）
+      pixelLine(ctx, handX, handY - 1, armX, handY - 1, PAL['S']);
+      pixelRect(ctx, armX, handY - 1, 3, 3, PAL['e']); // 手中的飞镖
+      return;
+    }
     const ang = (-65 + p * 78) * (Math.PI / 180); // -65° → +13°
-    const len = 40;
+    const isAxe = this.weapon.id === 'axe';
+    const len = isAxe ? 32 : 40;
     const tipX = handX + Math.cos(ang) * len;
     const tipY = handY + Math.sin(ang) * len;
+    if (isAxe) {
+      // 斧柄（木色）
+      pixelLine(ctx, handX, handY, Math.round(tipX), Math.round(tipY), PAL['n']);
+      pixelLine(ctx, handX, handY - 1, Math.round(tipX), Math.round(tipY) - 1, PAL['N']);
+      // 斧头：在尖端画一块钢色（沿柄法向）
+      const nx = -Math.sin(ang);
+      const ny = Math.cos(ang);
+      const hx = Math.round(tipX + nx * 4);
+      const hy = Math.round(tipY + ny * 4);
+      pixelRect(ctx, hx - 3, hy - 3, 7, 7, PAL['W']);
+      pixelRect(ctx, hx - 3, hy - 3, 7, 2, PAL['w']); // 高光
+      pixelRect(ctx, hx - 1, hy + 2, 3, 2, PAL['e']); // 刃口
+      // 残影
+      ctx.save();
+      ctx.globalAlpha = 0.35 * (1 - p);
+      for (let k = 0; k < 3; k++) {
+        const a = ang - (k + 1) * 0.22;
+        pixelLine(ctx, handX, handY, Math.round(handX + Math.cos(a) * len), Math.round(handY + Math.sin(a) * len), PAL['O']);
+      }
+      ctx.restore();
+      return;
+    }
     // 剑刃
     pixelLine(ctx, handX, handY, Math.round(tipX), Math.round(tipY), PAL['w']);
     pixelLine(ctx, handX, handY - 1, Math.round(tipX), Math.round(tipY) - 1, PAL['e']);
@@ -1097,6 +1864,38 @@ export class Battle {
       );
     }
     ctx.restore();
+  }
+
+  /** 蓄力条：玩家头顶，按等级填充，蓄满时金色脉动 + 三段刻度 */
+  private drawChargeBar(ctx: CanvasRenderingContext2D): void {
+    const level = Math.min(1, this.chargeT / CHARGE_MAX);
+    const full = level >= 0.999;
+    const bw = 46;
+    const bh = 6;
+    const bx = Math.round(this.playerX - bw / 2);
+    const by = Math.round(GROUND_Y - P_H - 16);
+    pixelRect(ctx, bx - 2, by - 2, bw + 4, bh + 4, PAL['K']);
+    pixelRect(ctx, bx, by, bw, bh, '#1a1438');
+    pixelRect(ctx, bx, by, Math.round(bw * level), bh, full ? PAL['y'] : PAL['e']);
+    // 三段刻度（区分蓄力阶段）
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = PAL['K'];
+    for (let k = 1; k < 3; k++) ctx.fillRect(bx + Math.round((bw * k) / 3), by + 1, 1, bh - 2);
+    ctx.restore();
+    if (full) {
+      ctx.save();
+      ctx.globalAlpha = 0.4 + 0.4 * Math.sin(this.time / 80);
+      ctx.strokeStyle = PAL['y'];
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx - 3, by - 3, bw + 6, bh + 6);
+      ctx.restore();
+    }
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = "7px 'Press Start 2P', monospace";
+    ctx.fillStyle = full ? PAL['y'] : PAL['e'];
+    ctx.fillText(full ? '蓄力满!' : '蓄力中', Math.round(this.playerX), by - 8);
   }
 
   private drawHud(ctx: CanvasRenderingContext2D): void {
@@ -1129,8 +1928,19 @@ export class Battle {
     ctx.font = "7px 'Press Start 2P', monospace";
     ctx.fillText(this.ultReady ? 'ULT READY 💢' : `RAGE ${Math.round(rageRatio * 100)}%`, rx, ry + 8);
 
-    // 激活中的增益（怒气条下方）
-    let buffY = ry + 20;
+    // 经验条 + 等级（怒气条下方，升级得属性点）
+    const ex = rx;
+    const ey = ry + 20;
+    pixelRect(ctx, ex - 2, ey - 2, rw + 4, 9, PAL['K']);
+    pixelRect(ctx, ex, ey, rw, 5, '#2a2150');
+    const expRatio = Math.min(1, this.exp / this.expForNext());
+    pixelRect(ctx, ex, ey, Math.round(rw * expRatio), 5, PAL['e']);
+    ctx.fillStyle = PAL['e'];
+    ctx.font = "7px 'Press Start 2P', monospace";
+    ctx.fillText(`Lv.${this.level}  EXP ${Math.round(expRatio * 100)}%`, ex, ey + 8);
+
+    // 激活中的增益（经验条下方）
+    let buffY = ey + 20;
     ctx.font = '12px serif';
     if (this.buffHaste > 0) { ctx.fillStyle = PAL['e']; ctx.fillText('⚡' + Math.ceil(this.buffHaste / 1000) + 's', rx, buffY); buffY += 14; }
     if (this.buffDouble > 0) { ctx.fillStyle = PAL['y']; ctx.fillText('💥' + Math.ceil(this.buffDouble / 1000) + 's', rx, buffY); buffY += 14; }
@@ -1153,11 +1963,44 @@ export class Battle {
       ctx.font = "8px 'Press Start 2P', monospace";
       ctx.fillText(`${this.fever ? '🔥 FEVER ' : ''}COMBO ${this.combo}`, VW / 2, 30);
     }
+    // 威胁等级（随存活时间递增：种类更多 / 血量更高 / 伤害更高；越高越红）
+    const dTier = Math.floor(this.time / 18000) + 1;
+    ctx.fillStyle = dTier >= 5 ? PAL['A'] : dTier >= 3 ? PAL['o'] : PAL['m'];
+    ctx.font = "8px 'Press Start 2P', monospace";
+    ctx.fillText(`威胁 Lv.${dTier}`, VW / 2, 56);
 
     // 击杀（右上）
     ctx.textAlign = 'right';
     ctx.fillStyle = PAL['y'];
     ctx.fillText(`KILLS ${this.kills}`, VW - 14, 16);
+    // 存活时间（右上，KILLS 下方）
+    const tSec = Math.floor(this.time / 1000);
+    ctx.fillStyle = PAL['m'];
+    ctx.font = "8px 'Press Start 2P', monospace";
+    ctx.fillText(`⏱ ${Math.floor(tSec / 60)}:${String(tSec % 60).padStart(2, '0')}`, VW - 14, 30);
+
+    // 已装备的装备图标（头盔/护甲/靴子，左下）
+    const helm = this.state.equippedGearDef('helm');
+    const armor = this.state.equippedGearDef('armor');
+    const boots = this.state.equippedGearDef('boots');
+    if (helm || armor || boots) {
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.font = '12px serif';
+      ctx.globalAlpha = 0.85;
+      ctx.fillText(`${helm?.icon ?? ''}${armor?.icon ?? ''}${boots?.icon ?? ''}`, 14, VH - 34);
+      ctx.globalAlpha = 1;
+    }
+
+    // 当前武器蓄力技（左下；恢复中变暗）
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = "8px 'Press Start 2P', monospace";
+    const onCd = this.chargeCd > 0;
+    ctx.globalAlpha = onCd ? 0.4 : 0.85;
+    ctx.fillStyle = onCd ? PAL['m'] : PAL['e'];
+    ctx.fillText(`${this.weapon.charge.icon} 蓄力·${this.weapon.charge.name}`, 14, VH - 18);
+    ctx.globalAlpha = 1;
 
     // 操作提示（首次未挥剑时）
     if (this.kills === 0 && this.swingTimer <= 0) {
@@ -1165,7 +2008,7 @@ export class Battle {
       ctx.globalAlpha = 0.6 + 0.4 * Math.sin(this.time / 300);
       ctx.fillStyle = PAL['w'];
       ctx.font = "8px 'Press Start 2P', monospace";
-      ctx.fillText('TAP TO SWING · 点屏挥剑', VW / 2, GROUND_Y - 40);
+      ctx.fillText('点屏攻击 · 长按蓄力', VW / 2, GROUND_Y - 40);
       ctx.globalAlpha = 1;
     }
   }
